@@ -327,6 +327,292 @@
     eq(s.ui.activeEncounterId, null);
   });
 
+  /* ---------- Damage types ---------- */
+
+  test("resistance halves rounding down, vulnerability doubles, immunity zeroes", () => {
+    const m = enemy({ damageResistances: ["fire"], damageVulnerabilities: ["bludgeoning"], damageImmunities: ["poison"] });
+    eq(R.damageAfterDefenses(13, "fire", m).amount, 6, "13 fire resisted");
+    eq(R.damageAfterDefenses(1, "fire", m).amount, 0, "1 fire resisted");
+    eq(R.damageAfterDefenses(7, "bludgeoning", m).amount, 14, "vulnerable");
+    eq(R.damageAfterDefenses(50, "poison", m).amount, 0, "immune");
+    eq(R.damageAfterDefenses(9, "cold", m).amount, 9, "no defense");
+    eq(R.damageAfterDefenses(9, "", m).amount, 9, "no type is raw");
+    eq(R.damageAfterDefenses(12, "fire", m).note, "12 fire, resistant: 6");
+  });
+
+  test("resistance applies before vulnerability", () => {
+    const m = enemy({ damageResistances: ["cold"], damageVulnerabilities: ["cold"] });
+    eq(R.damageAfterDefenses(13, "cold", m).amount, 12, "13 → 6 → 12");
+  });
+
+  test("type modifiers apply before temp HP", () => {
+    const m = enemy({ hp: { max: 15, current: 15, temp: 5 }, damageResistances: ["fire"] });
+    const r = R.applyDamage(m, 20, { type: "fire" });
+    eq([r.amount, r.result.absorbedByTemp, m.hp.current], [10, 5, 10]);
+  });
+
+  test("immune damage does not prompt a concentration save", () => {
+    const m = enemy({ damageImmunities: ["fire"], concentration: { active: true, spell: "Web" } });
+    R.applyDamage(m, 30, { type: "fire" });
+    eq(m.concentrationCheck, null);
+  });
+
+  test("concentration DC uses damage after resistance", () => {
+    const m = enemy({ hp: { max: 100, current: 100, temp: 0 }, damageResistances: ["fire"], concentration: { active: true, spell: "Web" } });
+    R.applyDamage(m, 44, { type: "fire" });
+    eq(m.concentrationCheck.dc, 11, "22 taken → DC 11");
+  });
+
+  test("condition immunity blocks the condition", () => {
+    const m = enemy({ conditionImmunities: ["Poisoned", "Exhaustion"] });
+    const r = R.addCondition(m, "Poisoned");
+    eq([r.blocked, R.hasCondition(m, "Poisoned")], [true, false]);
+    eq(R.changeExhaustion(m, 1).blocked, true);
+    eq(m.exhaustion, 0);
+    eq(R.changeExhaustion(m, -1).blocked, false, "lowering is never blocked");
+  });
+
+  /* ---------- Condition durations ---------- */
+
+  test("v1 condition strings migrate to indefinite objects", () => {
+    eq(R.normalizeConditions(["Prone", "Bogus", { name: "Blinded", endsOnRound: 4 }]),
+      [{ name: "Blinded", endsOnRound: 4 }, { name: "Prone", endsOnRound: null }]);
+  });
+
+  test("a 2-round condition lasts through the next round and expires after it", () => {
+    const enc = R.normalizeEncounter({ round: 3, combatants: [pc({ name: "A" }), enemy({ name: "B" })] });
+    const a = enc.combatants[0];
+    R.addCondition(a, "Blinded", { rounds: 2, round: 3 });
+    eq(a.conditions[0].endsOnRound, 4);
+    eq(R.roundsLeft(a.conditions[0], 3), 2);
+    R.nextTurn(enc); R.nextTurn(enc); // → round 4
+    eq(enc.round, 4);
+    ok(R.hasCondition(a, "Blinded"), "still blinded in round 4");
+    R.nextTurn(enc); const { events } = R.nextTurn(enc); // → round 5
+    ok(!R.hasCondition(a, "Blinded"), "expired at round 5");
+    ok(events.some((e) => e.text.includes("Blinded ends")), "expiry event");
+  });
+
+  test("indefinite conditions never expire", () => {
+    const enc = R.normalizeEncounter({ combatants: [pc({ name: "A", conditions: ["Prone"] })] });
+    for (let i = 0; i < 5; i++) R.nextTurn(enc);
+    ok(R.hasCondition(enc.combatants[0], "Prone"));
+  });
+
+  /* ---------- Turn start effects ---------- */
+
+  test("legendary actions refill at the start of the creature's own turn only", () => {
+    const enc = R.normalizeEncounter({
+      currentTurnIndex: 0,
+      combatants: [
+        pc({ name: "A", initiative: 20 }),
+        enemy({ name: "Dragon", initiative: 10, legendaryActions: 3, legendaryActionsLeft: 0, legendaryResistance: 3, legendaryResistanceLeft: 1 }),
+        pc({ name: "C", initiative: 5 }),
+      ],
+    });
+    const dragon = enc.combatants[1];
+    R.nextTurn(enc); // dragon's turn
+    eq(dragon.legendaryActionsLeft, 3, "refilled");
+    eq(dragon.legendaryResistanceLeft, 1, "legendary resistance does not refill");
+    dragon.legendaryActionsLeft = 1;
+    R.nextTurn(enc); // C's turn
+    eq(dragon.legendaryActionsLeft, 1, "not refilled on someone else's turn");
+  });
+
+  test("reaction and bonus action reset only for the creature whose turn begins", () => {
+    const enc = R.normalizeEncounter({
+      combatants: [pc({ name: "A", reactionUsed: true }), enemy({ name: "B", reactionUsed: true, bonusActionUsed: true, readied: true })],
+    });
+    R.nextTurn(enc);
+    const [a, b] = enc.combatants;
+    eq([b.reactionUsed, b.bonusActionUsed, b.readied], [false, false, false], "B reset");
+    eq(a.reactionUsed, true, "A untouched");
+  });
+
+  test("surprise ends when the creature's first turn ends", () => {
+    const enc = R.normalizeEncounter({
+      combatants: [pc({ name: "A", initiative: 20 }), enemy({ name: "B", initiative: 10, surprised: true }), enemy({ name: "C", initiative: 5, surprised: true })],
+    });
+    R.nextTurn(enc); // B's turn starts
+    eq(enc.combatants[1].surprised, true, "still surprised during its turn");
+    R.nextTurn(enc); // B's turn ends
+    eq(enc.combatants[1].surprised, false, "B done");
+    eq(enc.combatants[2].surprised, true, "C still surprised");
+    R.nextTurn(enc); // round 2
+    eq(enc.combatants[2].surprised, false, "cleared by round 2");
+  });
+
+  /* ---------- Delay ---------- */
+
+  test("delay moves the current combatant to just after the target", () => {
+    const enc = R.normalizeEncounter({
+      round: 2,
+      combatants: [
+        pc({ name: "A", initiative: 18 }), enemy({ name: "B", initiative: 15 }),
+        enemy({ name: "C", initiative: 12, stats: { dex: 18 } }), enemy({ name: "D", initiative: 12, stats: { dex: 8 } }),
+        pc({ name: "E", initiative: 3 }),
+      ],
+    });
+    R.sortEncounter(enc);
+    R.delayTurn(enc, enc.combatants[2].instanceId); // A delays after C
+    eq(enc.combatants.map((c) => c.name), ["B", "C", "A", "D", "E"]);
+    eq(enc.combatants[enc.currentTurnIndex].name, "B", "B acts now");
+    eq(enc.combatants[2].initiative, 12);
+    eq(R.delayTurn(enc, enc.combatants[0].instanceId), null, "can't delay to an earlier combatant");
+  });
+
+  /* ---------- Initiative ---------- */
+
+  test("initiative roll: enemies only, grouped by template", () => {
+    const enc = R.normalizeEncounter({
+      combatants: [
+        pc({ name: "Hero", initiative: 17 }),
+        { type: "lair", initiative: 20 },
+        enemy({ name: "Goblin 1", templateId: "g", initBonus: 2 }),
+        enemy({ name: "Goblin 2", templateId: "g", initBonus: 2 }),
+        enemy({ name: "Boss", templateId: "b", initBonus: 5 }),
+      ],
+    });
+    const events = R.rollInitiative(enc, { group: true, rng: faces(20, 10, 3) });
+    const by = (n) => enc.combatants.find((c) => c.name === n);
+    eq([by("Goblin 1").initiative, by("Goblin 2").initiative, by("Boss").initiative], [12, 12, 8]);
+    eq(by("Hero").initiative, 17, "PC untouched");
+    eq(by("Lair Action").initiative, 20, "lair untouched");
+    eq(events.length, 2);
+    ok(events[0].text.includes("Goblin ×2: d20 (10) +2 = 12"), events[0].text);
+    R.rollInitiative(enc, { group: false, rng: faces(20, 1, 20, 5) });
+    eq([by("Goblin 1").initiative, by("Goblin 2").initiative], [3, 22], "ungrouped");
+  });
+
+  /* ---------- Dice ---------- */
+
+  test("dice parser accepts common expressions and rejects junk", () => {
+    eq(R.parseDice("2d6+3"), [{ sign: 1, count: 2, sides: 6 }, { sign: 1, count: 3, sides: 0 }]);
+    eq(R.parseDice("d20 - 1"), [{ sign: 1, count: 1, sides: 20 }, { sign: -1, count: 1, sides: 0 }]);
+    eq(R.parseDice("d%")[0].sides, 100);
+    ["", "2d", "abc", "1d6*2", "alert(1)", "1d6+", "101d6", "1d0", "2d6 3"].forEach((bad) => {
+      let threw = false;
+      try { R.parseDice(bad); } catch { threw = true; }
+      ok(threw, `should reject "${bad}"`);
+    });
+  });
+
+  test("dice totals and advantage", () => {
+    eq(R.rollDice("2d6+3", { rng: faces(6, 4, 2) }).total, 9);
+    eq(R.rollDice("1d8+1d6-2", { rng: () => 0.99 }).total, 8 + 6 - 2, "mixed");
+    const adv = R.rollDice("d20+5", { mode: "adv", rng: faces(20, 7, 15) });
+    eq([adv.total, adv.natural], [20, 15]);
+    const dis = R.rollDice("d20+5", { mode: "dis", rng: faces(20, 7, 15) });
+    eq(dis.total, 12);
+    ok(R.rollDice("2d20", { mode: "adv", rng: faces(20, 1) }).text.includes("needs a single d20"));
+  });
+
+  test("attack damage expression", () => {
+    eq(R.attackDamageExpr({ dmgDice: "1d6", dmgBonus: 2 }), "1d6+2");
+    eq(R.attackDamageExpr({ dmgDice: "2d8", dmgBonus: -1 }), "2d8-1");
+    eq(R.attackDamageExpr({ dmgDice: "", dmgBonus: 3 }), "3");
+  });
+
+  /* ---------- Log ---------- */
+
+  test("combat log is capped at 300 entries", () => {
+    const enc = R.normalizeEncounter({});
+    for (let i = 0; i < 320; i++) R.pushLog(enc, "info", `entry ${i}`);
+    eq(enc.log.length, 300);
+    eq(enc.log[0].text, "entry 20");
+    eq(R.normalizeEncounter({ log: enc.log.concat(enc.log) }).log.length, 300, "normalizer caps too");
+  });
+
+  /* ---------- Stat block ---------- */
+
+  test("saves, skills, expertise and passive Perception", () => {
+    const dragon = enemy({
+      cr: "8", stats: { str: 19, dex: 12, con: 17, int: 16, wis: 13, cha: 15 },
+      saves: ["dex", "con", "wis", "cha"], skills: ["perception", "stealth"], expertise: ["perception"],
+    });
+    eq(["dex", "con", "wis", "cha", "str"].map((k) => R.saveBonus(dragon, k)), [4, 6, 4, 5, 4]);
+    eq(R.skillBonus(dragon, "perception"), 7, "expertise");
+    eq(R.skillBonus(dragon, "stealth"), 4);
+    eq(R.passivePerception(dragon), 17, "Young Green Dragon has passive 17");
+    eq(R.passivePerception(pc({ stats: { wis: 14 } })), 12, "unskilled PC");
+    eq(R.profOf(pc({ level: 9 })), 4, "PC prof by level");
+  });
+
+  test("save DC auto-fill is 8 + proficiency + ability", () => {
+    eq(R.autoSaveDc(enemy({ cr: "8", stats: { con: 17 } }), "con"), 14);
+  });
+
+  test("save attacks normalise with sensible defaults", () => {
+    const a = R.normalizeAttack({ name: "Breath", kind: "save", saveDc: 14, saveAbility: "con", halfOnSave: true });
+    eq([a.kind, a.saveDc, a.saveAbility, a.halfOnSave, a.autoSaveDc], ["save", 14, "con", true, true]);
+    eq(R.normalizeAttack({}).kind, "attack");
+  });
+
+  /* ---------- XP ---------- */
+
+  test("XP by CR and encounter totals", () => {
+    eq([R.xpForCr("0"), R.xpForCr("1/8"), R.xpForCr("1/4"), R.xpForCr("1/2"), R.xpForCr("1")], [10, 25, 50, 100, 200]);
+    eq([R.xpForCr("8"), R.xpForCr("17"), R.xpForCr("30"), R.xpForCr("")], [3900, 18000, 155000, 0]);
+    const enc = R.normalizeEncounter({ combatants: [pc(), enemy({ cr: "1/4" }), enemy({ cr: "1/4" }), enemy({ cr: "2" }), { type: "lair" }] });
+    eq(R.encounterXp(enc), 550);
+  });
+
+  /* ---------- Rests ---------- */
+
+  const restParty = () => R.normalizeEncounter({
+    combatants: [
+      pc({
+        name: "Warlock", hp: { max: 30, current: 12, temp: 4 }, exhaustion: 2,
+        spellSlots: [{ level: 1, max: 4, current: 1 }, { level: 3, max: 2, current: 0, recovery: "short" }],
+      }),
+      pc({ name: "Down", hp: { max: 20, current: 0, temp: 0 }, deathSaves: { success: 3, fail: 0 } }),
+      enemy({
+        name: "Lich", legendaryResistance: 3, legendaryResistanceLeft: 1, legendaryActions: 3, legendaryActionsLeft: 0,
+        recharges: [{ name: "Breath", min: 5, available: false }],
+      }),
+      { type: "lair" },
+    ],
+  });
+
+  test("long rest restores HP, slots, legendary resistance; exhaustion −1; ends temp HP", () => {
+    const enc = restParty();
+    const summary = R.applyRest(enc, "long");
+    const [w, down, lich] = enc.combatants.filter((c) => c.type !== "lair");
+    eq([w.hp.current, w.hp.temp, w.exhaustion], [30, 0, 1]);
+    eq(w.spellSlots.map((s) => s.current), [4, 2]);
+    eq([lich.legendaryResistanceLeft, lich.legendaryActionsLeft, lich.recharges[0].available], [3, 3, true]);
+    eq(down.hp.current, 0, "0 HP gets no long rest benefit");
+    ok(summary.find((s) => s.name === "Down").changes[0].includes("no benefit"));
+  });
+
+  test("short rest restores only short-rest slots and recharges", () => {
+    const enc = restParty();
+    R.applyRest(enc, "short");
+    const [w, , lich] = enc.combatants.filter((c) => c.type !== "lair");
+    eq(w.spellSlots.map((s) => s.current), [1, 2]);
+    eq([w.hp.current, w.exhaustion], [12, 2]);
+    eq([lich.recharges[0].available, lich.legendaryResistanceLeft], [true, 1]);
+  });
+
+  test("rest preview on a clone leaves the encounter alone", () => {
+    const enc = restParty();
+    const before = JSON.stringify(enc);
+    R.applyRest(R.clone(enc), "long");
+    eq(JSON.stringify(enc), before);
+  });
+
+  test("v1 fixture gains every v2 instance default", () => {
+    const s = R.migrateState(R.clone(V1_SAVE));
+    const gob = s.encounters[0].combatants.find((c) => c.name === "Goblin 1");
+    eq(gob.conditions, [{ name: "Frightened", endsOnRound: null }]);
+    eq([gob.legendaryActionsLeft, gob.reactionUsed, gob.surprised, gob.notes, gob.initRank], [0, false, false, "", 0]);
+    eq(gob.attacks[0].kind, "attack");
+    eq(gob.damageResistances, []);
+    eq(s.encounters[0].log, []);
+    eq(s.ui.cardMode, "full");
+    eq(s.ui.groupInitiative, true);
+  });
+
   /* ---------- Report ---------- */
 
   const failed = results.filter((r) => !r.ok);

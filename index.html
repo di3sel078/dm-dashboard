@@ -19,13 +19,7 @@
     <header class="topbar">
       <div class="brand">
         <span class="brand-sigil" aria-hidden="true">
-          <svg
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.6"
-            stroke-linejoin="round"
-          >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round">
             <path d="M12 2 21 7v10l-9 5-9-5V7z" />
             <path d="M12 2v20M3 7l9 5 9-5" />
           </svg>
@@ -34,12 +28,8 @@
       </div>
 
       <nav class="tabs" aria-label="Views">
-        <button class="tab" data-view="encounters" type="button">
-          Encounters
-        </button>
-        <button class="tab" data-view="active" type="button">
-          Active Encounter
-        </button>
+        <button class="tab" data-view="encounters" type="button">Encounters</button>
+        <button class="tab" data-view="active" type="button">Active Encounter</button>
         <button class="tab" data-view="library" type="button">Library</button>
       </nav>
     </header>
@@ -52,9 +42,7 @@
             <h2 class="view-title">Encounters</h2>
             <p class="view-subtitle">Saved battles, ready to resume.</p>
           </div>
-          <button class="btn btn-primary" id="btn-new-encounter" type="button">
-            + New Encounter
-          </button>
+          <button class="btn btn-primary" id="btn-new-encounter" type="button">+ New Encounter</button>
         </div>
         <div class="encounter-grid" id="encounter-list"></div>
       </section>
@@ -65,13 +53,7 @@
           <div class="empty-ornament" aria-hidden="true">✦</div>
           <h2 class="empty-title">No encounter open</h2>
           <p>Open one from the Encounters tab, or forge a new battle.</p>
-          <button
-            class="btn btn-primary"
-            id="btn-new-encounter-from-active"
-            type="button"
-          >
-            + New Encounter
-          </button>
+          <button class="btn btn-primary" id="btn-new-encounter-from-active" type="button">+ New Encounter</button>
         </div>
 
         <div id="active-content" class="hidden">
@@ -82,31 +64,9 @@
               <div class="clock" id="clock">
                 <span class="clock-label">Clock</span>
                 <span class="clock-time" id="clock-time">00:00</span>
-                <button
-                  class="icon-btn clock-btn"
-                  id="btn-clock-toggle"
-                  type="button"
-                  title="Start clock"
-                  aria-label="Start clock"
-                ></button>
-                <button
-                  class="icon-btn clock-btn"
-                  id="btn-clock-reset"
-                  type="button"
-                  title="Reset clock"
-                  aria-label="Reset clock"
-                >
-                  <svg
-                    viewBox="0 0 24 24"
-                    width="14"
-                    height="14"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    aria-hidden="true"
-                  >
+                <button class="icon-btn clock-btn" id="btn-clock-toggle" type="button" title="Start clock" aria-label="Start clock"></button>
+                <button class="icon-btn clock-btn" id="btn-clock-reset" type="button" title="Reset clock" aria-label="Reset clock">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                     <path d="M3 12a9 9 0 1 0 3-6.7L3 8" />
                     <path d="M3 3v5h5" />
                   </svg>
@@ -120,20 +80,11 @@
             </div>
 
             <div class="tracker-controls">
-              <button
-                class="btn btn-ghost"
-                id="btn-prev-turn"
-                type="button"
-                title="Previous turn"
-              >
+              <button class="btn btn-ghost" id="btn-prev-turn" type="button" title="Previous turn (P)">
                 <span class="chev" aria-hidden="true">‹</span> Prev
               </button>
-              <button
-                class="btn btn-primary btn-lg"
-                id="btn-next-turn"
-                type="button"
-                title="Next turn"
-              >
+              <button class="btn btn-ghost" id="btn-delay" type="button" title="Delay: act right after a later combatant this round">Delay</button>
+              <button class="btn btn-primary btn-lg" id="btn-next-turn" type="button" title="Next turn (N)">
                 Next Turn <span class="chev" aria-hidden="true">›</span>
               </button>
             </div>
@@ -142,26 +93,29 @@
           <div class="turn-banner" id="turn-banner"></div>
 
           <div class="tracker-actions">
-            <button class="btn btn-outline-light" id="btn-add-pc" type="button">
-              + Add PC
-            </button>
-            <button
-              class="btn btn-outline-red"
-              id="btn-add-enemy"
-              type="button"
-            >
-              + Add Enemy
-            </button>
-            <button
-              class="btn btn-outline-gold"
-              id="btn-add-lair"
-              type="button"
-            >
-              + Lair Action
-            </button>
+            <div class="tracker-group">
+              <button class="btn btn-outline-light" id="btn-add-pc" type="button">+ Add PC</button>
+              <button class="btn btn-outline-red" id="btn-add-enemy" type="button">+ Add Enemy</button>
+              <button class="btn btn-outline-gold" id="btn-add-lair" type="button">+ Lair Action</button>
+            </div>
+            <div class="tracker-group">
+              <button class="btn btn-ghost" id="btn-roll-init" type="button" title="Roll d20 + initiative bonus for every enemy. PCs roll their own.">Roll Initiative</button>
+              <label class="checkbox-field checkbox-field--sm" title="One roll per group of identical monsters (PHB p.189)">
+                <input type="checkbox" id="opt-group-init" /> <span>Group identical</span>
+              </label>
+            </div>
+            <div class="tracker-group">
+              <button class="btn btn-ghost" id="btn-short-rest" type="button">Short Rest</button>
+              <button class="btn btn-ghost" id="btn-long-rest" type="button">Long Rest</button>
+            </div>
             <span class="tracker-actions-spacer"></span>
             <span class="difficulty hidden" id="difficulty"></span>
+            <span class="xp-total hidden" id="xp-total" title="Sum of enemy XP by CR (DMG p.275). No group multiplier applied."></span>
             <span class="tracker-count" id="tracker-count"></span>
+            <div class="tracker-group">
+              <button class="btn btn-ghost" id="btn-toggle-dice" type="button" aria-pressed="false" aria-controls="dice-panel" title="Dice roller (D)">Dice</button>
+              <button class="btn btn-ghost" id="btn-toggle-log" type="button" aria-pressed="false" aria-controls="log-drawer" title="Combat log (L)">Log</button>
+            </div>
           </div>
 
           <div class="card-grid" id="combatant-cards"></div>
@@ -173,41 +127,22 @@
         <div class="view-head">
           <div>
             <h2 class="view-title">Library</h2>
-            <p class="view-subtitle">
-              Reusable stat blocks. Editing here never touches an open
-              encounter.
-            </p>
+            <p class="view-subtitle">Reusable stat blocks. Editing here never touches an open encounter.</p>
           </div>
         </div>
 
         <div class="library-columns">
           <div class="library-col">
             <div class="library-col-head">
-              <h3 class="library-col-title library-col-title--pc">
-                Player Characters
-              </h3>
-              <button
-                class="btn btn-outline-light btn-sm"
-                id="btn-new-pc"
-                type="button"
-              >
-                + New PC
-              </button>
+              <h3 class="library-col-title library-col-title--pc">Player Characters</h3>
+              <button class="btn btn-outline-light btn-sm" id="btn-new-pc" type="button">+ New PC</button>
             </div>
             <div class="library-list" id="library-pcs"></div>
           </div>
           <div class="library-col">
             <div class="library-col-head">
-              <h3 class="library-col-title library-col-title--enemy">
-                Enemies
-              </h3>
-              <button
-                class="btn btn-outline-red btn-sm"
-                id="btn-new-enemy"
-                type="button"
-              >
-                + New Enemy
-              </button>
+              <h3 class="library-col-title library-col-title--enemy">Enemies</h3>
+              <button class="btn btn-outline-red btn-sm" id="btn-new-enemy" type="button">+ New Enemy</button>
             </div>
             <div class="library-list" id="library-enemies"></div>
           </div>
@@ -215,32 +150,56 @@
       </section>
     </main>
 
+    <!-- ============ COMBAT LOG DRAWER ============ -->
+    <aside class="log-drawer" id="log-drawer" aria-label="Combat log" hidden>
+      <div class="drawer-head">
+        <h2 class="drawer-title">Combat Log</h2>
+        <button class="btn btn-ghost btn-sm" id="btn-log-clear" type="button">Clear</button>
+        <button class="icon-btn" id="btn-log-close" type="button" aria-label="Close combat log">×</button>
+      </div>
+      <ol class="log-list" id="log-list"></ol>
+    </aside>
+
+    <!-- ============ DICE ROLLER ============ -->
+    <aside class="dice-panel" id="dice-panel" aria-label="Dice roller" hidden>
+      <div class="drawer-head">
+        <h2 class="drawer-title">Dice</h2>
+        <button class="icon-btn" id="btn-dice-close" type="button" aria-label="Close dice roller">×</button>
+      </div>
+      <div class="dice-buttons" id="dice-buttons">
+        <button class="dice-btn" type="button" data-roll="d4">d4</button>
+        <button class="dice-btn" type="button" data-roll="d6">d6</button>
+        <button class="dice-btn" type="button" data-roll="d8">d8</button>
+        <button class="dice-btn" type="button" data-roll="d10">d10</button>
+        <button class="dice-btn" type="button" data-roll="d12">d12</button>
+        <button class="dice-btn dice-btn--d20" type="button" data-roll="d20">d20</button>
+        <button class="dice-btn" type="button" data-roll="d100">d100</button>
+      </div>
+      <div class="dice-mode" role="radiogroup" aria-label="d20 mode">
+        <label><input type="radio" name="dice-mode" value="normal" checked /> Normal</label>
+        <label><input type="radio" name="dice-mode" value="adv" /> Advantage</label>
+        <label><input type="radio" name="dice-mode" value="dis" /> Disadvantage</label>
+      </div>
+      <form class="dice-form" id="dice-form" autocomplete="off">
+        <input type="text" id="dice-expr" placeholder="2d6+3" aria-label="Dice expression" />
+        <button class="btn btn-primary btn-sm" type="submit">Roll</button>
+      </form>
+      <output class="dice-result" id="dice-result" aria-live="polite"></output>
+    </aside>
+
     <!-- ============ CREATURE MODAL ============ -->
-    <dialog class="modal" id="creature-modal">
+    <dialog class="modal" id="creature-modal" aria-labelledby="creature-modal-title">
       <form class="modal-form" id="creature-form" method="dialog" novalidate>
         <div class="modal-head">
           <h2 class="modal-title" id="creature-modal-title">New Creature</h2>
-          <button
-            class="icon-btn modal-close"
-            type="button"
-            data-close
-            aria-label="Close"
-          >
-            ×
-          </button>
+          <button class="icon-btn modal-close" type="button" data-close aria-label="Close">×</button>
         </div>
 
         <div class="modal-body">
           <div class="field-row">
             <label class="field field--grow">
               <span class="field-label">Name</span>
-              <input
-                type="text"
-                name="name"
-                required
-                autocomplete="off"
-                placeholder="e.g. Goblin Boss"
-              />
+              <input type="text" name="name" required autocomplete="off" placeholder="e.g. Goblin Boss" />
             </label>
             <label class="field" data-for="enemy">
               <span class="field-label">CR</span>
@@ -259,12 +218,18 @@
             </label>
             <label class="field">
               <span class="field-label">Race</span>
-              <input
-                type="text"
-                name="race"
-                autocomplete="off"
-                placeholder="e.g. Half-Elf"
-              />
+              <input type="text" name="race" autocomplete="off" placeholder="e.g. Half-Elf" />
+            </label>
+          </div>
+
+          <div class="field-row" data-for="enemy">
+            <label class="field">
+              <span class="field-label">Type</span>
+              <input type="text" name="creatureType" autocomplete="off" placeholder="e.g. Medium humanoid (goblinoid)" />
+            </label>
+            <label class="field">
+              <span class="field-label">Alignment</span>
+              <input type="text" name="alignment" autocomplete="off" placeholder="e.g. neutral evil" />
             </label>
           </div>
 
@@ -279,20 +244,11 @@
             </label>
             <label class="field">
               <span class="field-label">Init Bonus</span>
-              <input
-                type="number"
-                name="initBonus"
-                title="Leave blank to use the DEX modifier"
-              />
+              <input type="number" name="initBonus" title="Leave blank to use the DEX modifier" />
             </label>
             <label class="field">
               <span class="field-label">Speed</span>
-              <input
-                type="text"
-                name="speed"
-                autocomplete="off"
-                placeholder="30 ft."
-              />
+              <input type="text" name="speed" autocomplete="off" placeholder="30 ft." />
             </label>
             <label class="field" id="creature-initiative-field">
               <span class="field-label">Initiative</span>
@@ -302,123 +258,131 @@
 
           <fieldset class="stats-fieldset">
             <legend class="field-label">Ability Scores</legend>
-            <div class="stats-inputs">
-              <label class="stat-input"
-                ><span>STR</span
-                ><input
-                  type="number"
-                  name="str"
-                  min="1"
-                  max="30"
-                  value="10"
-                /><span class="stat-input-mod" data-mod-for="str"
-                  >+0</span
-                ></label
-              >
-              <label class="stat-input"
-                ><span>DEX</span
-                ><input
-                  type="number"
-                  name="dex"
-                  min="1"
-                  max="30"
-                  value="10"
-                /><span class="stat-input-mod" data-mod-for="dex"
-                  >+0</span
-                ></label
-              >
-              <label class="stat-input"
-                ><span>CON</span
-                ><input
-                  type="number"
-                  name="con"
-                  min="1"
-                  max="30"
-                  value="10"
-                /><span class="stat-input-mod" data-mod-for="con"
-                  >+0</span
-                ></label
-              >
-              <label class="stat-input"
-                ><span>INT</span
-                ><input
-                  type="number"
-                  name="int"
-                  min="1"
-                  max="30"
-                  value="10"
-                /><span class="stat-input-mod" data-mod-for="int"
-                  >+0</span
-                ></label
-              >
-              <label class="stat-input"
-                ><span>WIS</span
-                ><input
-                  type="number"
-                  name="wis"
-                  min="1"
-                  max="30"
-                  value="10"
-                /><span class="stat-input-mod" data-mod-for="wis"
-                  >+0</span
-                ></label
-              >
-              <label class="stat-input"
-                ><span>CHA</span
-                ><input
-                  type="number"
-                  name="cha"
-                  min="1"
-                  max="30"
-                  value="10"
-                /><span class="stat-input-mod" data-mod-for="cha"
-                  >+0</span
-                ></label
-              >
-            </div>
+            <div class="stats-inputs" id="stats-inputs"></div>
           </fieldset>
 
-          <details class="spell-details" id="skills-details" data-for="enemy">
+          <details class="spell-details" id="saves-details">
+            <summary class="spell-summary">
+              <span class="field-label">Saving Throws</span>
+              <span class="spell-summary-hint" id="saves-prof-hint"></span>
+            </summary>
+            <div class="save-grid" id="save-grid"></div>
+          </details>
+
+          <details class="spell-details" id="skills-details">
             <summary class="spell-summary">
               <span class="field-label">Skill Proficiencies</span>
               <span class="spell-summary-hint" id="skills-prof-hint"></span>
             </summary>
+            <p class="detail-hint">Tick a skill for proficiency; tick ×2 as well for expertise.</p>
             <div class="skill-grid" id="skill-grid"></div>
+          </details>
+
+          <details class="spell-details" id="senses-details">
+            <summary class="spell-summary">
+              <span class="field-label">Senses &amp; Languages</span>
+              <span class="spell-summary-hint" id="passive-hint"></span>
+            </summary>
+            <div class="field-row">
+              <label class="field">
+                <span class="field-label">Senses</span>
+                <input type="text" name="senses" autocomplete="off" placeholder="darkvision 60 ft." />
+              </label>
+              <label class="field">
+                <span class="field-label">Languages</span>
+                <input type="text" name="languages" autocomplete="off" placeholder="Common, Goblin" />
+              </label>
+            </div>
+          </details>
+
+          <details class="spell-details" id="defenses-details">
+            <summary class="spell-summary">
+              <span class="field-label">Damage &amp; Condition Defenses</span>
+              <span class="spell-summary-hint">applied when a damage type is chosen</span>
+            </summary>
+            <div class="def-block">
+              <span class="field-label">Resistances</span>
+              <div class="check-grid" data-def-grid="damageResistances"></div>
+            </div>
+            <div class="def-block">
+              <span class="field-label">Immunities</span>
+              <div class="check-grid" data-def-grid="damageImmunities"></div>
+            </div>
+            <div class="def-block">
+              <span class="field-label">Vulnerabilities</span>
+              <div class="check-grid" data-def-grid="damageVulnerabilities"></div>
+            </div>
+            <label class="field">
+              <span class="field-label">Defense notes (text only)</span>
+              <input type="text" name="damageNotes" autocomplete="off" placeholder="bludgeoning, piercing and slashing from nonmagical attacks" />
+            </label>
+            <div class="def-block">
+              <span class="field-label">Condition immunities</span>
+              <div class="check-grid" data-def-grid="conditionImmunities"></div>
+            </div>
           </details>
 
           <details class="spell-details" id="attacks-details" data-for="enemy">
             <summary class="spell-summary">
               <span class="field-label">Attacks</span>
-              <span class="spell-summary-hint"
-                >to hit and damage bonus fill in from the ability and CR</span
-              >
+              <span class="spell-summary-hint">to hit, save DC and damage bonus fill in from the ability and CR</span>
             </summary>
+            <label class="field">
+              <span class="field-label">Multiattack</span>
+              <input type="text" name="multiattack" autocomplete="off" placeholder="The goblin boss makes two scimitar attacks." />
+            </label>
             <div class="spell-rows" id="attack-rows"></div>
-            <button
-              class="btn btn-ghost btn-sm"
-              type="button"
-              id="btn-add-attack"
-            >
-              + Add Attack
-            </button>
+            <button class="btn btn-ghost btn-sm" type="button" id="btn-add-attack">+ Add Attack</button>
             <datalist id="damage-types"></datalist>
           </details>
 
           <details class="spell-details" id="recharge-details" data-for="enemy">
             <summary class="spell-summary">
               <span class="field-label">Recharge Abilities</span>
-              <span class="spell-summary-hint"
-                >rolled automatically each turn</span
-              >
+              <span class="spell-summary-hint">rolled automatically each turn</span>
             </summary>
             <div class="spell-rows" id="recharge-rows"></div>
-            <button
-              class="btn btn-ghost btn-sm"
-              type="button"
-              id="btn-add-recharge"
-            >
-              + Add Ability
-            </button>
+            <button class="btn btn-ghost btn-sm" type="button" id="btn-add-recharge">+ Add Ability</button>
+          </details>
+
+          <details class="spell-details" id="legendary-details" data-for="enemy">
+            <summary class="spell-summary">
+              <span class="field-label">Legendary</span>
+              <span class="spell-summary-hint">actions refill at the start of its turn</span>
+            </summary>
+            <div class="field-row">
+              <label class="field">
+                <span class="field-label">Legendary actions / round</span>
+                <input type="number" name="legendaryActions" min="0" max="9" value="0" />
+              </label>
+              <label class="field">
+                <span class="field-label">Legendary resistance / day</span>
+                <input type="number" name="legendaryResistance" min="0" max="9" value="0" />
+              </label>
+            </div>
+            <label class="field">
+              <span class="field-label">Legendary actions text</span>
+              <textarea name="legendaryText" rows="4" placeholder="Detect. The dragon makes a Wisdom (Perception) check."></textarea>
+            </label>
+          </details>
+
+          <details class="spell-details" id="text-details" data-for="enemy">
+            <summary class="spell-summary">
+              <span class="field-label">Traits, Actions &amp; Reactions</span>
+              <span class="spell-summary-hint">free text, shown in the detail view</span>
+            </summary>
+            <label class="field">
+              <span class="field-label">Traits</span>
+              <textarea name="traits" rows="4" placeholder="Nimble Escape. The goblin can take the Disengage or Hide action as a bonus action."></textarea>
+            </label>
+            <label class="field">
+              <span class="field-label">Actions</span>
+              <textarea name="actions" rows="4"></textarea>
+            </label>
+            <label class="field">
+              <span class="field-label">Reactions</span>
+              <textarea name="reactions" rows="3"></textarea>
+            </label>
           </details>
 
           <details class="spell-details" id="spell-details">
@@ -427,13 +391,7 @@
               <span class="spell-summary-hint">optional</span>
             </summary>
             <div class="spell-rows" id="spell-rows"></div>
-            <button
-              class="btn btn-ghost btn-sm"
-              type="button"
-              id="btn-add-spell-level"
-            >
-              + Add Spell Level
-            </button>
+            <button class="btn btn-ghost btn-sm" type="button" id="btn-add-spell-level">+ Add Spell Level</button>
           </details>
 
           <label class="checkbox-field" id="save-to-library-field">
@@ -444,53 +402,35 @@
 
         <div class="modal-foot">
           <button class="btn btn-ghost" type="button" data-close>Cancel</button>
-          <button class="btn btn-primary" type="submit" id="creature-submit">
-            Save
-          </button>
+          <button class="btn btn-primary" type="submit" id="creature-submit">Save</button>
         </div>
       </form>
     </dialog>
 
     <!-- ============ COMBATANT DETAIL ============ -->
-    <dialog class="modal modal-lg" id="detail-modal">
+    <dialog class="modal modal-lg" id="detail-modal" aria-labelledby="detail-title">
       <div class="modal-form">
         <div class="modal-head">
           <div>
             <h2 class="modal-title" id="detail-title">Combatant</h2>
             <span class="detail-subtitle" id="detail-subtitle"></span>
           </div>
-          <button
-            class="icon-btn modal-close"
-            type="button"
-            data-close
-            aria-label="Close"
-          >
-            ×
-          </button>
+          <button class="icon-btn modal-close" type="button" data-close aria-label="Close">×</button>
         </div>
         <div class="modal-body detail-body" id="detail-body"></div>
         <div class="modal-foot modal-foot--split">
-          <button class="btn btn-ghost" type="button" id="detail-edit">
-            Edit Stat Block
-          </button>
+          <button class="btn btn-ghost" type="button" id="detail-edit">Edit Stat Block</button>
           <button class="btn btn-primary" type="button" data-close>Done</button>
         </div>
       </div>
     </dialog>
 
     <!-- ============ ADD-TO-ENCOUNTER PICKER ============ -->
-    <dialog class="modal modal-sm" id="picker-modal">
+    <dialog class="modal modal-sm" id="picker-modal" aria-labelledby="picker-title">
       <form class="modal-form" id="picker-form" method="dialog" novalidate>
         <div class="modal-head">
           <h2 class="modal-title" id="picker-title">Add Combatant</h2>
-          <button
-            class="icon-btn modal-close"
-            type="button"
-            data-close
-            aria-label="Close"
-          >
-            ×
-          </button>
+          <button class="icon-btn modal-close" type="button" data-close aria-label="Close">×</button>
         </div>
         <div class="modal-body">
           <label class="field field-wide">
@@ -507,83 +447,68 @@
               <input type="number" name="count" min="1" max="20" value="1" />
             </label>
           </div>
-          <p class="picker-empty hidden" id="picker-empty">
-            The library has nothing of this kind yet.
-          </p>
+          <p class="picker-empty hidden" id="picker-empty">The library has nothing of this kind yet.</p>
         </div>
         <div class="modal-foot modal-foot--split">
-          <button class="btn btn-ghost" type="button" id="picker-create-new">
-            Create New…
-          </button>
+          <button class="btn btn-ghost" type="button" id="picker-create-new">Create New…</button>
           <div>
-            <button class="btn btn-ghost" type="button" data-close>
-              Cancel
-            </button>
-            <button class="btn btn-primary" type="submit" id="picker-submit">
-              Add to Encounter
-            </button>
+            <button class="btn btn-ghost" type="button" data-close>Cancel</button>
+            <button class="btn btn-primary" type="submit" id="picker-submit">Add to Encounter</button>
           </div>
         </div>
       </form>
     </dialog>
 
+    <!-- ============ CHOICE DIALOG (pick one of several) ============ -->
+    <dialog class="modal modal-sm" id="choice-modal" aria-labelledby="choice-title">
+      <div class="modal-form">
+        <div class="modal-head">
+          <h2 class="modal-title" id="choice-title">Choose</h2>
+          <button class="icon-btn modal-close" type="button" data-close aria-label="Close">×</button>
+        </div>
+        <div class="modal-body">
+          <p class="confirm-text" id="choice-text"></p>
+          <div class="choice-list" id="choice-list"></div>
+        </div>
+        <div class="modal-foot">
+          <button class="btn btn-ghost" type="button" data-close>Cancel</button>
+        </div>
+      </div>
+    </dialog>
+
     <!-- ============ TEXT PROMPT DIALOG ============ -->
-    <dialog class="modal modal-sm" id="prompt-modal">
+    <dialog class="modal modal-sm" id="prompt-modal" aria-labelledby="prompt-title">
       <form class="modal-form" id="prompt-form" method="dialog" novalidate>
         <div class="modal-head">
           <h2 class="modal-title" id="prompt-title">Name</h2>
-          <button
-            class="icon-btn modal-close"
-            type="button"
-            data-close
-            aria-label="Close"
-          >
-            ×
-          </button>
+          <button class="icon-btn modal-close" type="button" data-close aria-label="Close">×</button>
         </div>
         <div class="modal-body">
           <label class="field field-wide">
             <span class="field-label" id="prompt-label">Name</span>
-            <input
-              type="text"
-              name="value"
-              id="prompt-input"
-              autocomplete="off"
-              required
-            />
+            <input type="text" name="value" id="prompt-input" autocomplete="off" required />
           </label>
         </div>
         <div class="modal-foot">
           <button class="btn btn-ghost" type="button" data-close>Cancel</button>
-          <button class="btn btn-primary" type="submit" id="prompt-submit">
-            OK
-          </button>
+          <button class="btn btn-primary" type="submit" id="prompt-submit">OK</button>
         </div>
       </form>
     </dialog>
 
     <!-- ============ CONFIRM DIALOG ============ -->
-    <dialog class="modal modal-sm modal-danger" id="confirm-modal">
+    <dialog class="modal modal-sm modal-danger" id="confirm-modal" aria-labelledby="confirm-title">
       <form class="modal-form" id="confirm-form" method="dialog" novalidate>
         <div class="modal-head">
           <h2 class="modal-title" id="confirm-title">Are you sure?</h2>
-          <button
-            class="icon-btn modal-close"
-            type="button"
-            data-close
-            aria-label="Close"
-          >
-            ×
-          </button>
+          <button class="icon-btn modal-close" type="button" data-close aria-label="Close">×</button>
         </div>
         <div class="modal-body">
-          <p class="confirm-text" id="confirm-text"></p>
+          <div class="confirm-text" id="confirm-text"></div>
         </div>
         <div class="modal-foot">
           <button class="btn btn-ghost" type="button" data-close>Cancel</button>
-          <button class="btn btn-danger" type="submit" id="confirm-submit">
-            Delete
-          </button>
+          <button class="btn btn-danger" type="submit" id="confirm-submit">Delete</button>
         </div>
       </form>
     </dialog>

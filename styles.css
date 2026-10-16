@@ -676,8 +676,10 @@ input[type="number"]::-webkit-inner-spin-button {
     border-color var(--dur-med),
     transform var(--dur-slow) var(--ease-out),
     opacity var(--dur-med);
+}
+/* Only cards that just joined animate in; re-renders leave the rest still. */
+.card.is-new {
   animation: cardIn var(--dur-slow) var(--ease-out) both;
-  cursor: pointer;
 }
 @keyframes cardIn {
   from {
@@ -702,17 +704,13 @@ input[type="number"]::-webkit-inner-spin-button {
   box-shadow: var(--shadow-turn), var(--shadow-card);
   transform: translateY(-3px);
   background: linear-gradient(170deg, #302020 0%, var(--bg-2) 70%);
-  animation:
-    cardIn var(--dur-slow) var(--ease-out) both,
-    turnPulse 2.4s var(--ease-in-out) infinite;
+  animation: turnPulse 2.4s var(--ease-in-out) infinite;
 }
 .card--pc.is-current {
   border-color: var(--blue-300);
   box-shadow: var(--shadow-turn-pc), var(--shadow-card);
   background: linear-gradient(170deg, var(--blue-tint) 0%, var(--bg-2) 70%);
-  animation:
-    cardIn var(--dur-slow) var(--ease-out) both,
-    turnPulsePc 2.4s var(--ease-in-out) infinite;
+  animation: turnPulsePc 2.4s var(--ease-in-out) infinite;
 }
 @keyframes turnPulsePc {
   0%,
@@ -1913,7 +1911,7 @@ button.chip {
     0 0 24px var(--gold-glow),
     var(--shadow-card);
   background: linear-gradient(170deg, var(--bg-3) 0%, var(--bg-2) 70%);
-  animation: cardIn var(--dur-slow) var(--ease-out) both;
+  animation: none;
 }
 .lair-notes {
   color: var(--text-1);
@@ -2301,6 +2299,664 @@ button.chip {
     opacity: 0;
     transform: translateY(6px);
   }
+}
+
+/* ---------- Tracker: grouped actions, XP ---------- */
+.tracker-actions {
+  flex-wrap: wrap;
+}
+.tracker-group {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.xp-total {
+  padding: var(--sp-1) var(--sp-3);
+  border-radius: var(--r-pill);
+  border: 1px solid var(--border-mid);
+  background: var(--bg-2);
+  color: var(--text-1);
+  font-size: var(--fs-xs);
+  cursor: help;
+}
+.xp-total b {
+  color: var(--gold-400);
+}
+.checkbox-field--sm {
+  font-size: var(--fs-xs);
+}
+.checkbox-field--sm input {
+  width: var(--pip-size);
+  height: var(--pip-size);
+}
+.btn.is-on {
+  border-color: var(--gold-500);
+  color: var(--gold-400);
+}
+
+/* ---------- Card: header controls ---------- */
+.card-name-btn {
+  display: inline;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-align: left;
+  cursor: pointer;
+  text-decoration: underline transparent;
+  text-underline-offset: 3px;
+  transition: text-decoration-color var(--dur-fast);
+}
+.card-name-btn:hover {
+  text-decoration-color: currentColor;
+}
+.card-name-btn:focus-visible,
+.init-roll:focus-visible,
+.attack-hit:focus-visible,
+.attack-dmg:focus-visible,
+.chip:focus-visible,
+.pip:focus-visible,
+.dice-btn:focus-visible,
+.choice-btn:focus-visible,
+.toast-action:focus-visible {
+  outline: 2px solid var(--red-300);
+  outline-offset: 2px;
+}
+.card-initiative {
+  height: auto;
+  padding: var(--sp-1) 0;
+  gap: var(--sp-05);
+}
+.init-roll {
+  display: grid;
+  place-items: center;
+  width: var(--icon-btn-sm);
+  height: var(--sp-4);
+  padding: 0;
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-2);
+  transition:
+    color var(--dur-fast),
+    background var(--dur-fast);
+}
+.init-roll:hover {
+  color: var(--gold-400);
+  background: var(--bg-3);
+}
+
+/* ---------- Card: HP state text, damage type ---------- */
+.hp-state {
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  color: var(--green-300);
+}
+.hp-state--is-wounded {
+  color: var(--amber-300);
+}
+.hp-state--is-critical {
+  color: var(--red-200);
+}
+.hp-adjust select {
+  flex: 1.3;
+  min-width: 0;
+  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border-mid);
+  background: var(--bg-2);
+  color: var(--text-1);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+}
+.hp-adjust select:focus {
+  outline: none;
+  border-color: var(--red-300);
+}
+
+/* ---------- Card: AC, action economy, legendary ---------- */
+.card-vitals-side {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: var(--sp-2);
+}
+.card-economy {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+}
+.chip--econ {
+  border-color: var(--green-500);
+  color: var(--green-300);
+}
+.chip--econ.is-used {
+  border-style: dashed;
+  border-color: var(--border-mid);
+  color: var(--text-2);
+  text-decoration: line-through;
+}
+.chip--econ:disabled {
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+.chip--ready.is-on {
+  border-color: var(--blue-400);
+  background: var(--blue-glow-soft);
+  color: var(--blue-300);
+}
+.chip--surprised.is-on {
+  border-color: var(--amber-500);
+  background: var(--amber-glow-soft);
+  color: var(--amber-300);
+}
+.legendary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1) var(--sp-3);
+}
+.legendary-group {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+.legendary-label {
+  color: var(--gold-400);
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+}
+.legendary-pips {
+  display: inline-flex;
+  gap: var(--sp-1);
+}
+.legendary .pip {
+  border-color: var(--gold-500);
+}
+.legendary .pip.is-full {
+  background: var(--gold-500);
+  box-shadow: 0 0 8px var(--gold-glow);
+}
+
+/* ---------- Card: notes, collapsible stats, attacks ---------- */
+.card-notes {
+  padding-left: var(--sp-2);
+  border-left: 2px solid var(--gold-500);
+  color: var(--text-1);
+  font-size: var(--fs-xs);
+  font-style: italic;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.card-more {
+  border-top: 1px solid var(--border-subtle);
+  padding-top: var(--sp-2);
+}
+.card-more-summary {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--text-2);
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+.card-more-summary::-webkit-details-marker {
+  display: none;
+}
+.card-more-summary::before {
+  content: "▸";
+  color: var(--gold-500);
+  transition: transform var(--dur-fast);
+}
+.card-more[open] > .card-more-summary::before {
+  transform: rotate(90deg);
+}
+.card-more-summary:hover {
+  color: var(--text-0);
+}
+.card-more-summary:focus-visible {
+  outline: 2px solid var(--red-300);
+  outline-offset: 2px;
+  border-radius: var(--r-sm);
+}
+.card-more-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin-top: var(--sp-2);
+}
+.card-multiattack {
+  color: var(--text-1);
+  font-size: var(--fs-xs);
+  font-style: italic;
+}
+.attack {
+  grid-template-columns: 1fr auto auto;
+}
+button.attack-hit,
+button.attack-dmg {
+  padding: 0 var(--sp-1);
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: none;
+  font-size: inherit;
+  cursor: pointer;
+  transition:
+    border-color var(--dur-fast),
+    background var(--dur-fast);
+}
+button.attack-hit:hover,
+button.attack-dmg:hover {
+  border-color: var(--border-mid);
+  background: var(--bg-3);
+}
+.attack-save {
+  color: var(--amber-300);
+  font-weight: 700;
+}
+.attack-note {
+  grid-column: 1 / -1;
+  color: var(--text-2);
+}
+
+/* ---------- Combat log drawer & dice panel ---------- */
+.log-drawer,
+.dice-panel {
+  position: fixed;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding: var(--sp-4);
+  border: 1px solid var(--border-mid);
+  border-radius: var(--r-lg);
+  background: linear-gradient(170deg, var(--bg-3), var(--bg-2) 60%);
+  box-shadow: var(--shadow-raised);
+}
+.log-drawer[hidden],
+.dice-panel[hidden] {
+  display: none;
+}
+.log-drawer {
+  top: calc(var(--topbar-h) + var(--sp-4));
+  right: var(--sp-4);
+  bottom: var(--sp-4);
+  width: min(var(--drawer-w), calc(100vw - var(--sp-6)));
+  animation: drawerIn var(--dur-med) var(--ease-out);
+}
+.dice-panel {
+  left: var(--sp-4);
+  bottom: var(--sp-4);
+  width: min(var(--dice-w), calc(100vw - var(--sp-6)));
+  animation: drawerIn var(--dur-med) var(--ease-out);
+}
+@keyframes drawerIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.drawer-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.drawer-title {
+  flex: 1;
+  font-family: var(--font-display);
+  font-size: var(--fs-lg);
+  letter-spacing: var(--tracking-display);
+  color: var(--gold-400);
+}
+.log-list {
+  flex: 1;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+.log-entry {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--sp-2);
+  padding: var(--sp-1) var(--sp-2);
+  border-left: 2px solid var(--border-mid);
+  border-radius: var(--r-sm);
+  background: var(--bg-1);
+  color: var(--text-1);
+  font-size: var(--fs-xs);
+}
+.log-round {
+  color: var(--text-2);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.log-entry--damage,
+.log-entry--death {
+  border-left-color: var(--red-300);
+}
+.log-entry--heal {
+  border-left-color: var(--green-500);
+}
+.log-entry--condition {
+  border-left-color: var(--amber-500);
+}
+.log-entry--concentration {
+  border-left-color: var(--purple-300);
+}
+.log-entry--turn {
+  border-left-color: var(--gold-500);
+  color: var(--text-0);
+  font-weight: 600;
+}
+.log-entry--roll,
+.log-entry--recharge {
+  border-left-color: var(--blue-400);
+}
+.log-empty {
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+}
+.dice-buttons {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--sp-1);
+}
+.dice-btn {
+  min-height: var(--touch-target);
+  border: 1px solid var(--border-mid);
+  border-radius: var(--r-sm);
+  background: var(--bg-1);
+  font-family: var(--font-display);
+  font-weight: 700;
+  transition:
+    background var(--dur-fast),
+    border-color var(--dur-fast);
+}
+.dice-btn:hover {
+  background: var(--bg-3);
+  border-color: var(--gold-500);
+}
+.dice-btn--d20 {
+  border-color: var(--red-500);
+}
+.dice-mode {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1) var(--sp-3);
+  color: var(--text-1);
+  font-size: var(--fs-xs);
+}
+.dice-mode input {
+  accent-color: var(--red-400);
+}
+.dice-form {
+  display: flex;
+  gap: var(--sp-2);
+}
+.dice-form input {
+  flex: 1;
+  min-width: 0;
+  padding: var(--sp-1) var(--sp-3);
+  border-radius: var(--r-md);
+  border: 1px solid var(--border-mid);
+  background: var(--bg-1);
+  color: var(--text-0);
+  outline: none;
+}
+.dice-form input:focus {
+  border-color: var(--red-300);
+}
+.dice-result {
+  min-height: var(--sp-6);
+  color: var(--text-0);
+  font-size: var(--fs-sm);
+}
+
+/* ---------- Choice dialog, confirm lists, action toasts ---------- */
+.choice-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+.choice-btn {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  min-height: var(--touch-target);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border-mid);
+  border-radius: var(--r-md);
+  background: var(--bg-1);
+  text-align: left;
+  transition:
+    background var(--dur-fast),
+    border-color var(--dur-fast);
+}
+.choice-btn:hover {
+  background: var(--bg-3);
+  border-color: var(--red-400);
+}
+.choice-btn small {
+  color: var(--text-2);
+}
+.confirm-text p + p,
+.confirm-text p + ul,
+.confirm-text ul + p {
+  margin-top: var(--sp-2);
+}
+.confirm-list {
+  margin: 0;
+  padding-left: var(--sp-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  font-size: var(--fs-sm);
+}
+.toast {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+.toast--action {
+  pointer-events: auto;
+  animation:
+    toastIn var(--dur-med) var(--ease-out),
+    toastOut var(--dur-med) var(--ease-in-out) 6.4s forwards;
+}
+.toast-action {
+  padding: var(--sp-1) var(--sp-3);
+  border: 1px solid var(--gold-500);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--gold-400);
+  font-size: var(--fs-xs);
+  font-weight: 700;
+}
+.toast-action:hover {
+  background: var(--bg-4);
+}
+
+/* ---------- Builder additions ---------- */
+.save-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--sp-05) var(--sp-3);
+  margin-top: var(--sp-3);
+}
+.skill-main {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  cursor: pointer;
+}
+.skill-exp {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-05);
+  color: var(--text-2);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+}
+.skill-exp input {
+  accent-color: var(--gold-500);
+}
+.skill-check:has(input[data-expertise]:checked) .skill-exp {
+  color: var(--gold-400);
+}
+.def-block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  margin-top: var(--sp-3);
+}
+.check-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+}
+.check-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: var(--sp-05) var(--sp-2);
+  border: 1px solid var(--border-mid);
+  border-radius: var(--r-pill);
+  color: var(--text-1);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+}
+.check-chip input {
+  accent-color: var(--red-400);
+}
+.check-chip:has(input:checked) {
+  border-color: var(--amber-500);
+  background: var(--amber-glow-soft);
+  color: var(--amber-300);
+}
+.attack-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  padding: var(--sp-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+}
+.attack-row .field {
+  flex: 1 1 5rem;
+}
+.attack-row .atk-name,
+.attack-row .atk-note {
+  flex: 3 1 9rem;
+}
+.attack-row .atk-kind {
+  flex: 2 1 7rem;
+}
+.attack-row .atk-half {
+  flex: 0 0 auto;
+  padding-bottom: var(--sp-2);
+}
+.attack-row[data-kind="attack"] .atk-save-only,
+.attack-row[data-kind="save"] .atk-attack-only {
+  display: none;
+}
+#creature-form textarea {
+  font-size: var(--fs-sm);
+}
+
+/* ---------- Detail additions ---------- */
+.detail-summary {
+  grid-template-columns: repeat(auto-fit, minmax(7rem, 1fr));
+}
+.detail-ability-save {
+  font-size: var(--fs-xs);
+  color: var(--text-2);
+}
+.detail-ability.is-save-prof {
+  border-color: var(--gold-500);
+}
+.detail-ability.is-save-prof .detail-ability-save {
+  color: var(--gold-400);
+  font-weight: 700;
+}
+.detail-statlines {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+.detail-text b {
+  color: var(--text-0);
+  margin-right: var(--sp-1);
+}
+.detail-text--italic {
+  font-style: italic;
+}
+.detail-prose {
+  color: var(--text-1);
+  font-size: var(--fs-sm);
+  white-space: pre-line;
+}
+.duration-field {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--text-1);
+  font-size: var(--fs-xs);
+}
+.duration-field input {
+  width: 4.5rem;
+  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border-mid);
+  background: var(--bg-1);
+  color: var(--text-0);
+  text-align: center;
+}
+.duration-field input:focus {
+  outline: none;
+  border-color: var(--amber-500);
+}
+.chip--toggle.is-immune {
+  border-style: dashed;
+  color: var(--text-2);
+}
+.effect-list small {
+  color: var(--amber-300);
+}
+
+/* ---------- Utilities ---------- */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+.empty-state--wide {
+  grid-column: 1 / -1;
 }
 
 /* ---------- Scrollbars ---------- */

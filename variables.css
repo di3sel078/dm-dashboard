@@ -120,4 +120,10 @@
   --topbar-h: 72px;
   --card-min: 300px;
   --touch-target: 40px; /* minimum height for primary card controls */
+  --drawer-w: 380px;
+  --dice-w: 300px;
+  --pip-size: 14px;
+  --pip-size-sm: 12px;
+  --icon-btn: 30px;
+  --icon-btn-sm: 24px;
 }

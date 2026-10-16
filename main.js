@@ -1,11 +1,12 @@
 /* ==========================================================================
    DM Dashboard — Application Logic
+   Rules (math, normalisation, migration, dice) live in rules.js as DMRules.
    Sections:
      1. Constants & utilities
-     2. State & storage (incl. normalisation / migration)
-     3. Domain helpers (sorting, cloning, naming, HP, clock, difficulty)
+     2. State & storage (load/migrate, save, commit, undo, log)
+     3. Domain helpers (combatants, HP, turns, rests, clock)
      4. Rendering
-     5. Dialogs (creature builder, detail, picker, prompt, confirm, toast)
+     5. Dialogs (toast, prompt, confirm, choice, creature builder, detail, picker)
      6. Event wiring
      7. Boot
    ========================================================================== */
@@ -19,15 +20,16 @@
 
   const R = window.DMRules;
   const {
-    STAT_KEYS, STAT_NAMES, SKILL_BY_KEY, SKILLS, CONDITIONS, CONDITION_EFFECTS, CLASSES, CR_OPTIONS,
-    DAMAGE_TYPES, LAIR_INITIATIVE, uuid, toInt, clamp, modifier, formatMod, formatNum,
-    profFromCr, rechargeLabel, initBonusOf, skillBonus, normalizeAttack, normalizeTemplate,
+    STAT_KEYS, STAT_NAMES, SKILLS, SKILL_BY_KEY, CONDITIONS, CONDITION_EFFECTS, CLASSES, CR_OPTIONS,
+    DAMAGE_TYPES, uuid, toInt, clamp, modifier, formatMod, formatNum, profFromCr, profFromLevel,
+    rechargeLabel, initBonusOf, skillBonus, saveBonus, normalizeAttack, normalizeTemplate,
     normalizeEncounter, normalizeInstance, instantiate, makeLair, uniqueName, sortEncounter,
   } = R;
 
   const STORAGE_KEY = "dm-dashboard-state-v2";
   const LEGACY_STORAGE_KEY = "dm-dashboard-state-v1";
   const SCHEMA_VERSION = 2;
+  const UNDO_LIMIT = 30;
   const LEVEL_LABEL = { 1: "1st", 2: "2nd", 3: "3rd" };
 
   const $ = (sel, root = document) => root.querySelector(sel);
@@ -39,7 +41,7 @@
   const ICON_EXPAND = svg(`<path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/>`);
   const ICON_PLAY = svg(`<path d="M7 4.5v15l12-7.5z" fill="currentColor"/>`, 14);
   const ICON_PAUSE = svg(`<path d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z" fill="currentColor" stroke="none"/>`, 14);
-  const ICON_RESET = svg(`<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/>`, 14);
+  const ICON_DIE = svg(`<rect x="4" y="4" width="16" height="16" rx="3"/><circle cx="9" cy="9" r="1" fill="currentColor"/><circle cx="15" cy="15" r="1" fill="currentColor"/><circle cx="15" cy="9" r="1" fill="currentColor"/><circle cx="9" cy="15" r="1" fill="currentColor"/>`, 12);
 
   const escapeHtml = (str) =>
     String(str ?? "")
@@ -47,6 +49,8 @@
       .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 
   const ordinal = (n) => LEVEL_LABEL[n] || `${n}th`;
+  const capitalize = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+  const baseName = (name) => name.replace(/\s+\d+$/, "");
 
   /** "1d6+2 slashing" */
   function damageText(atk) {
@@ -94,12 +98,46 @@
       console.error("Could not persist state.", err);
       toast("Could not save to localStorage.");
     }
+    snapshotActive();
+  }
+
+  /* ---------- Undo ----------
+     After every save we keep a JSON copy of the active encounter. An undoable
+     commit pushes that copy (the state before this mutation) onto the stack. */
+  let lastSnapshot = null;
+  const undoStack = [];
+
+  function snapshotActive() {
+    const enc = activeEncounter();
+    lastSnapshot = enc ? { id: enc.id, json: JSON.stringify(enc) } : null;
   }
 
   /** Persist, then repaint. Every mutation funnels through here. */
-  function commit() {
+  function commit({ undo = null } = {}) {
+    if (undo && lastSnapshot) {
+      undoStack.push({ ...lastSnapshot, label: undo });
+      if (undoStack.length > UNDO_LIMIT) undoStack.shift();
+    }
     saveState();
     renderAll();
+  }
+
+  function undo() {
+    while (undoStack.length) {
+      const entry = undoStack.pop();
+      const idx = state.encounters.findIndex((e) => e.id === entry.id);
+      if (idx < 0) continue;
+      const restored = normalizeEncounter(JSON.parse(entry.json));
+      // The clock keeps running in real time; undo never rewinds it.
+      restored.clock = state.encounters[idx].clock;
+      state.encounters[idx] = restored;
+      toast(`Undone: ${entry.label}`);
+      saveState();
+      renderAll();
+      return true;
+    }
+    toast("Nothing to undo.");
+    return false;
   }
 
   const libraryList = (type) => (type === "pc" ? state.creatureLibrary.pcs : state.creatureLibrary.enemies);
@@ -109,37 +147,23 @@
   const templateType = (id) => (state.creatureLibrary.pcs.some((t) => t.id === id) ? "pc" : "enemy");
   const findEncounter = (id) => state.encounters.find((e) => e.id === id) || null;
   const activeEncounter = () => findEncounter(state.ui.activeEncounterId);
+  const findCombatant = (id) => activeEncounter()?.combatants.find((c) => c.instanceId === id) || null;
+
+  /**
+   * Record rule events in the encounter's log and toast them. Turn changes
+   * are logged but not toasted; the banner already says it.
+   */
+  function announce(events, { enc = activeEncounter(), quiet = false } = {}) {
+    (events || []).forEach((ev) => {
+      if (enc) R.pushLog(enc, ev.kind, ev.text);
+      if (!quiet && ev.kind !== "turn") toast(ev.text);
+    });
+  }
+  const logEntry = (kind, text, enc = activeEncounter()) => { if (enc) R.pushLog(enc, kind, text); };
 
   /* ======================================================================
      3. Domain helpers
      ====================================================================== */
-
-  /** Build a normalised stat block from raw builder values. */
-  function buildStatBlock(values, type) {
-    const stats = {};
-    STAT_KEYS.forEach((k) => { stats[k] = values[k]; });
-    const shared = {
-      name: values.name,
-      hp: { max: values.hpMax },
-      ac: values.ac,
-      speed: values.speed,
-      stats,
-      spellSlots: values.spellSlots,
-      // Blank init bonus falls back to the DEX modifier.
-      initBonus: values.initBonus === "" ? null : values.initBonus,
-    };
-    const specific = type === "pc" ? {
-      level: values.level,
-      cls: values.cls,
-      race: values.race,
-    } : {
-      cr: values.cr,
-      skills: values.skills,
-      attacks: (values.attacks || []).filter((a) => String(a.name).trim()),
-      recharges: (values.recharges || []).filter((r) => String(r.name).trim()),
-    };
-    return normalizeTemplate({ ...shared, ...specific }, type);
-  }
 
   function addCombatantsFromTemplate(enc, templateId, initiative, count) {
     const template = findTemplate(templateId);
@@ -152,22 +176,20 @@
       enc.combatants.push(inst);
     }
     sortEncounter(enc);
+    logEntry("info", `${n === 1 ? template.name : `${n} × ${template.name}`} joined the encounter.`, enc);
     return n;
   }
 
-  /** Surface rule events (from rules.js) to the DM. */
-  function announce(events) {
-    (events || []).forEach((ev) => toast(ev.text));
-  }
-
-  /** Damage from the card controls. Returns a short summary for the toast. */
-  function damageCombatant(c, amount, { crit = false } = {}) {
-    const { result, events } = R.applyDamage(c, amount, { crit });
-    const parts = [`${c.name} takes ${amount}`];
-    if (result.absorbedByTemp) parts.push(`${result.absorbedByTemp} absorbed by temp HP`);
-    if (result.overflow && c.type === "pc" && !result.instantDeath && result.droppedToZero) parts.push(`${result.overflow} overflow`);
-    toast(parts.join(", ") + ".");
-    announce(events);
+  /* ---------- HP ---------- */
+  function damageCombatant(c, amount, { crit = false, type = "" } = {}) {
+    const r = R.applyDamage(c, amount, { crit, type });
+    const parts = [`${c.name} takes ${r.amount}${r.defense ? ` (${r.note})` : type ? ` ${type}` : ""}`];
+    if (r.result.absorbedByTemp) parts.push(`${r.result.absorbedByTemp} absorbed by temp HP`);
+    if (crit) parts.push("critical hit");
+    const summary = parts.join(", ") + ".";
+    toast(summary);
+    logEntry("damage", summary);
+    announce(r.events);
   }
 
   function healCombatant(c, amount) {
@@ -176,19 +198,41 @@
       return false;
     }
     const { result, events } = R.applyHealing(c, amount);
-    toast(result.healed
+    const summary = result.healed
       ? `${c.name} regains ${result.healed} HP${result.healed < amount ? ` (capped at max ${c.hp.max})` : ""}.`
-      : `${c.name} is already at max HP.`);
+      : `${c.name} is already at max HP.`;
+    toast(summary);
+    if (result.healed) logEntry("heal", summary);
     announce(events);
-    return true;
+    return result.healed > 0;
   }
 
   function grantTemp(c, amount) {
     const r = R.grantTempHp(c, amount);
-    toast(r.applied
+    const msg = r.applied
       ? `${c.name} gains ${r.value} temp HP.`
-      : `${c.name} keeps ${r.previous} temp HP; the new ${r.value} was ignored (temp HP doesn't stack).`);
+      : `${c.name} keeps ${r.previous} temp HP; the new ${r.value} was ignored (temp HP doesn't stack).`;
+    toast(msg);
+    if (r.applied) logEntry("heal", msg);
     return r.applied;
+  }
+
+  /* ---------- Rolls ---------- */
+  let diceMode = "normal";
+
+  function rollAndLog(label, expr, { mode = "normal", suffix = "" } = {}) {
+    try {
+      const r = R.rollDice(expr, { mode });
+      const nat = r.natural === 20 ? " Natural 20!" : r.natural === 1 ? " Natural 1." : "";
+      const text = `${label}: ${r.text}${suffix ? ` ${suffix}` : ""}.${nat}`;
+      logEntry("roll", text);
+      toast(text);
+      $("#dice-result").textContent = text;
+      return r;
+    } catch (err) {
+      toast(err.message);
+      return null;
+    }
   }
 
   /* ---------- Encounter clock ---------- */
@@ -214,20 +258,32 @@
   }
 
   /* ---------- Turn order ---------- */
+  let roundBump = false;
+
   function nextTurn(enc) {
     if (!enc.combatants.length) return;
     // The first Next Turn of a fresh encounter starts the clock.
     if (!clockRunning(enc) && enc.clock.elapsedMs === 0) startClock(enc);
     const { events, newRound } = R.nextTurn(enc);
     if (newRound) roundBump = true;
-    announce(events);
+    announce(events, { enc });
   }
 
   function prevTurn(enc) {
-    if (R.prevTurn(enc).newRound) roundBump = true;
+    const { events, newRound } = R.prevTurn(enc);
+    if (newRound) roundBump = true;
+    announce(events, { enc });
   }
 
-  let roundBump = false;
+  function removeCombatant(enc, combatant) {
+    const removedIdx = enc.combatants.indexOf(combatant);
+    if (removedIdx < 0) return;
+    enc.combatants.splice(removedIdx, 1);
+    if (removedIdx < enc.currentTurnIndex) enc.currentTurnIndex -= 1;
+    else if (removedIdx === enc.currentTurnIndex && removedIdx >= enc.combatants.length) enc.currentTurnIndex = 0;
+    sortEncounter(enc);
+    logEntry("info", `${combatant.name} left the encounter.`, enc);
+  }
 
   /* ======================================================================
      4. Rendering
@@ -239,10 +295,16 @@
     renderActiveEncounter();
     renderLibrary();
     renderDetail();
+    renderLog();
+    renderDice();
   }
 
   function renderTabs() {
-    $$(".tab").forEach((tab) => tab.classList.toggle("is-active", tab.dataset.view === state.ui.view));
+    $$(".tab").forEach((tab) => {
+      const on = tab.dataset.view === state.ui.view;
+      tab.classList.toggle("is-active", on);
+      if (on) tab.setAttribute("aria-current", "page"); else tab.removeAttribute("aria-current");
+    });
     $$(".view").forEach((view) => view.classList.toggle("is-active", view.dataset.view === state.ui.view));
   }
 
@@ -251,7 +313,7 @@
     const host = $("#encounter-list");
     if (!state.encounters.length) {
       host.innerHTML = `
-        <div class="empty-state" style="grid-column: 1 / -1;">
+        <div class="empty-state empty-state--wide">
           <div class="empty-ornament" aria-hidden="true">✦</div>
           <h2 class="empty-title">No encounters yet</h2>
           <p>Every great battle begins with a name.</p>
@@ -278,13 +340,32 @@
             </button>
             <button class="btn btn-ghost btn-sm" type="button" data-action="rename-encounter">Rename</button>
             <span class="spacer"></span>
-            <button class="icon-btn icon-btn--danger" type="button" data-action="delete-encounter" title="Delete encounter" aria-label="Delete encounter">${ICON_TRASH}</button>
+            <button class="icon-btn icon-btn--danger" type="button" data-action="delete-encounter" title="Delete encounter" aria-label="Delete encounter ${escapeHtml(enc.name)}">${ICON_TRASH}</button>
           </div>
         </article>`;
     }).join("");
   }
 
   /* ---------- Active encounter ---------- */
+
+  /** Cards already shown for an encounter, so only newcomers play the entrance animation. */
+  const seenCards = new Map();
+  /** Per-card overrides of the collapsible stats section (instanceId → open). */
+  const moreOpen = new Map();
+  /** The damage type last chosen on each card, kept across re-renders. */
+  const lastDamageType = new Map();
+
+  /** A selector for the focused card control, so focus survives a full re-render. */
+  function focusKey(grid) {
+    const el = document.activeElement;
+    const card = el?.closest?.("[data-instance-id]");
+    if (!card || !grid.contains(card) || el === card) return null;
+    const attrs = Object.entries(el.dataset)
+      .map(([k, v]) => `[data-${k.replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`)}="${String(v).replace(/"/g, '\\"')}"]`)
+      .join("");
+    return attrs ? `[data-instance-id="${card.dataset.instanceId}"] ${attrs}` : null;
+  }
+
   function renderActiveEncounter() {
     const enc = activeEncounter();
     $("#active-empty").classList.toggle("hidden", !!enc);
@@ -307,39 +388,54 @@
     const hasCombatants = enc.combatants.length > 0;
     $("#btn-next-turn").disabled = !hasCombatants;
     $("#btn-prev-turn").disabled = !hasCombatants;
+    $("#btn-delay").disabled = enc.currentTurnIndex >= enc.combatants.length - 1 || enc.combatants[enc.currentTurnIndex]?.type === "lair";
+    $("#btn-roll-init").disabled = !enc.combatants.some((c) => c.type === "enemy");
+    $("#opt-group-init").checked = state.ui.groupInitiative;
 
     const count = enc.combatants.length;
     $("#tracker-count").textContent = count ? `${count} in initiative order` : "";
 
-    const banner = $("#turn-banner");
-    if (hasCombatants) {
-      const cur = enc.combatants[enc.currentTurnIndex];
-      const next = enc.combatants[(enc.currentTurnIndex + 1) % enc.combatants.length];
-      const status = vitalStatus(cur);
-      const unconscious = cur.type !== "lair" && R.hasCondition(cur, "Unconscious") && status?.key !== "dead";
-      const note = status?.key === "dead" ? "Dead"
-        : [status && status.key !== "unconscious" ? status.label : "", unconscious ? "Unconscious" : ""].filter(Boolean).join(" · ");
-      banner.classList.toggle("is-pc", cur.type === "pc");
-      banner.innerHTML = `
-        <span>Now acting:</span>
-        <strong>${escapeHtml(cur.name)}</strong>
-        ${note ? `<span class="turn-note turn-note--${status?.key || "unconscious"}">${escapeHtml(note)}</span>` : ""}
-        <span class="turn-tag">Up next · ${escapeHtml(next.name)}</span>`;
-    } else {
-      banner.innerHTML = "";
-    }
+    renderBanner(enc);
 
     const grid = $("#combatant-cards");
     if (!hasCombatants) {
       grid.innerHTML = `
-        <div class="empty-state" style="grid-column: 1 / -1;">
+        <div class="empty-state empty-state--wide">
           <div class="empty-ornament" aria-hidden="true">⚔</div>
           <h2 class="empty-title">The field is empty</h2>
           <p>Add player characters and enemies to begin rolling initiative.</p>
         </div>`;
       return;
     }
-    grid.innerHTML = enc.combatants.map((c, i) => renderCard(c, i === enc.currentTurnIndex)).join("");
+    const refocus = focusKey(grid);
+    const seen = seenCards.get(enc.id) || new Set();
+    const firstPaint = !seenCards.has(enc.id);
+    grid.innerHTML = enc.combatants.map((c, i) =>
+      renderCard(c, i === enc.currentTurnIndex, enc, !firstPaint && !seen.has(c.instanceId))).join("");
+    seenCards.set(enc.id, new Set(enc.combatants.map((c) => c.instanceId)));
+    if (refocus) $(refocus)?.focus();
+  }
+
+  function renderBanner(enc) {
+    const banner = $("#turn-banner");
+    if (!enc.combatants.length) { banner.innerHTML = ""; return; }
+    const cur = enc.combatants[enc.currentTurnIndex];
+    const next = enc.combatants[(enc.currentTurnIndex + 1) % enc.combatants.length];
+    const status = vitalStatus(cur);
+    const unconscious = cur.type !== "lair" && R.hasCondition(cur, "Unconscious") && status?.key !== "dead";
+    const notes = [];
+    if (status?.key === "dead") notes.push(["dead", "Dead"]);
+    else {
+      if (status && status.key !== "unconscious") notes.push([status.key, status.label]);
+      if (unconscious) notes.push(["unconscious", "Unconscious"]);
+      if (cur.surprised) notes.push(["surprised", "Surprised: no action or move this turn"]);
+    }
+    banner.classList.toggle("is-pc", cur.type === "pc");
+    banner.innerHTML = `
+      <span>Now acting:</span>
+      <strong>${escapeHtml(cur.name)}</strong>
+      ${notes.map(([k, label]) => `<span class="turn-note turn-note--${k}">${escapeHtml(label)}</span>`).join("")}
+      <span class="turn-tag">Up next · ${escapeHtml(next.name)}</span>`;
   }
 
   /** Runs every second; touches only the clock so nothing else re-renders. */
@@ -362,6 +458,9 @@
     const el = $("#difficulty");
     const d = R.encounterDifficulty(enc);
     el.classList.toggle("hidden", !d);
+    const xp = R.encounterXp(enc);
+    $("#xp-total").classList.toggle("hidden", !enc.combatants.some((c) => c.type === "enemy"));
+    $("#xp-total").innerHTML = `XP <b>${xp.toLocaleString()}</b>`;
     if (!d) return;
     const label = { under: "Under benchmark", approaching: "Approaching", over: "Over benchmark" }[d.tier];
     el.className = `difficulty difficulty--${d.tier}`;
@@ -369,7 +468,7 @@
       <span class="difficulty-label">Benchmark</span>
       <span>CR <b>${formatNum(d.totalCr)}</b> / ${formatNum(d.benchmark)}</span>
       <span class="difficulty-tier">${label}</span>
-      ${d.dominant ? `<span class="difficulty-warn">Hint: ${escapeHtml(d.dominant.name.replace(/\s+\d+$/, ""))} may be a lot on its own</span>` : ""}`;
+      ${d.dominant ? `<span class="difficulty-warn">Hint: ${escapeHtml(baseName(d.dominant.name))} may be a lot on its own</span>` : ""}`;
     el.title =
       `Lazy Encounter Benchmark (Sly Flourish): a rough heuristic, not the DMG XP budget.\n` +
       `Total enemy CR ${formatNum(d.totalCr)} vs. benchmark ${formatNum(d.benchmark)} ` +
@@ -394,27 +493,46 @@
     return { key: "dying", label: "Dying" };
   }
 
+  /** A text equivalent of the HP bar colour. */
+  function hpStateLabel(c) {
+    const vs = vitalStatus(c);
+    if (vs) return vs.label;
+    const pct = c.hp.max > 0 ? c.hp.current / c.hp.max : 0;
+    return pct >= 1 ? "Unhurt" : pct > 0.5 ? "Hurt" : pct > 0.25 ? "Bloodied" : "Critical";
+  }
+
   const exhaustionTitle = (level) =>
     R.exhaustionEffects(level).map((e, i) => `${i + 1}: ${e}`).join("\n");
 
-  function statusChipsHtml(c) {
+  function conditionChip(cond, round) {
+    const left = R.roundsLeft(cond, round);
+    const effect = CONDITION_EFFECTS[cond.name] || "";
+    const title = left === null ? effect : `${effect}\nEnds after ${left} more round${left === 1 ? "" : "s"} (last round ${cond.endsOnRound}).`;
+    return `<span class="chip chip--cond" title="${escapeHtml(title)}">${cond.name}${left === null ? "" : ` <small>${left}r</small>`}</span>`;
+  }
+
+  function concCheckHtml(c, inDetail = false) {
+    const check = c.concentrationCheck;
+    if (!check || !c.concentration?.active) return "";
+    return `
+      <div class="conc-check" role="status">
+        <span>Concentration save <b>DC ${check.dc}</b>${check.count > 1 ? ` <small>×${check.count} saves</small>` : ""}</span>
+        ${inDetail
+          ? `<button class="btn btn-ghost btn-sm" type="button" data-action="dismiss-conc-check">Dismiss</button>`
+          : `<button class="icon-btn conc-check-dismiss" type="button" data-action="dismiss-conc-check" title="Dismiss" aria-label="Dismiss concentration save reminder">×</button>`}
+      </div>`;
+  }
+
+  function statusChipsHtml(c, round) {
     const chips = [];
     if (c.concentration?.active) {
       chips.push(`<span class="chip chip--conc" title="Concentrating">◉ ${escapeHtml(c.concentration.spell || "Concentrating")}</span>`);
     }
-    (c.conditions || []).forEach((cond) =>
-      chips.push(`<span class="chip chip--cond" title="${escapeHtml(CONDITION_EFFECTS[cond] || "")}">${cond}</span>`));
+    (c.conditions || []).forEach((cond) => chips.push(conditionChip(cond, round)));
     if (c.exhaustion) {
       chips.push(`<span class="chip chip--exh" title="${escapeHtml(`Exhaustion (cumulative)\n${exhaustionTitle(c.exhaustion)}`)}">Exhaustion ${c.exhaustion}</span>`);
     }
-    const check = c.concentrationCheck;
-    const banner = check && c.concentration?.active ? `
-      <div class="conc-check" role="status">
-        <span>Concentration save <b>DC ${check.dc}</b>${check.count > 1 ? ` <small>×${check.count} saves</small>` : ""}</span>
-        <button class="icon-btn conc-check-dismiss" type="button" data-action="dismiss-conc-check"
-                title="Dismiss" aria-label="Dismiss concentration save reminder">×</button>
-      </div>` : "";
-    return (chips.length ? `<div class="card-status">${chips.join("")}</div>` : "") + banner;
+    return (chips.length ? `<div class="card-status">${chips.join("")}</div>` : "") + concCheckHtml(c);
   }
 
   function deathSavesHtml(c) {
@@ -422,18 +540,22 @@
     const pips = (kind) => [0, 1, 2].map((i) => `
       <button class="pip pip--${kind} ${i < ds[kind] ? "is-full" : ""}" type="button"
               data-action="death-save" data-kind="${kind}" data-index="${i}"
-              aria-label="Death save ${kind} ${i + 1}"></button>`).join("");
+              aria-pressed="${i < ds[kind]}" aria-label="Death save ${kind === "fail" ? "failure" : "success"} ${i + 1}"></button>`).join("");
     const vs = vitalStatus(c);
     const status = vs && ["dead", "stable"].includes(vs.key)
       ? `<span class="ds-status ds-status--${vs.key}">${vs.label}</span>` : "";
     return `
       <div class="death-saves">
         <span class="ds-label">Death Saves</span>
-        <span class="ds-group" title="Successes"><span class="ds-kind ds-kind--success">✓</span>${pips("success")}</span>
-        <span class="ds-group" title="Failures"><span class="ds-kind ds-kind--fail">✗</span>${pips("fail")}</span>
+        <span class="ds-group" title="Successes"><span class="ds-kind ds-kind--success" aria-hidden="true">✓</span>${pips("success")}</span>
+        <span class="ds-group" title="Failures"><span class="ds-kind ds-kind--fail" aria-hidden="true">✗</span>${pips("fail")}</span>
         ${status}
       </div>`;
   }
+
+  const pipRow = (count, full, action, extra, label) => Array.from({ length: count }, (_, p) => `
+    <button class="pip ${p < full ? "is-full" : ""}" type="button" data-action="${action}" ${extra} data-pip-index="${p}"
+            aria-pressed="${p < full}" aria-label="${label} ${p + 1}"></button>`).join("");
 
   function spellBlockHtml(c) {
     if (!c.spellSlots?.length) return "";
@@ -444,25 +566,67 @@
           ${c.spellSlots.map((s, idx) => `
             <div class="spell-row-card">
               <span class="spell-level">${ordinal(s.level)}${s.recovery === "short" ? ` <abbr class="spell-recovery" title="Recovers on a short rest">SR</abbr>` : ""}</span>
-              <div class="spell-pips">
-                ${Array.from({ length: s.max }, (_, p) => `
-                  <button class="pip ${p < s.current ? "is-full" : ""}" type="button"
-                          data-action="toggle-pip" data-slot-index="${idx}" data-pip-index="${p}"
-                          title="${p < s.current ? "Expend slot" : "Restore slot"}"
-                          aria-label="${ordinal(s.level)} level slot ${p + 1}"></button>`).join("")}
-              </div>
+              <div class="spell-pips">${pipRow(s.max, s.current, "toggle-pip", `data-slot-index="${idx}"`, `${ordinal(s.level)} level slot`)}</div>
               <span class="spell-count">${s.current}/${s.max}</span>
             </div>`).join("")}
         </div>
       </div>`;
   }
 
-  const attackHtml = (atk) => `
-    <div class="attack">
-      <span class="attack-name">${escapeHtml(atk.name)}</span>
-      <span class="attack-hit" title="To hit">${formatMod(atk.toHit)}</span>
-      <span class="attack-dmg">${escapeHtml(damageText(atk))}</span>
-    </div>`;
+  function legendaryHtml(c) {
+    const la = c.legendaryActions || 0;
+    const lr = c.legendaryResistance || 0;
+    if (!la && !lr) return "";
+    return `
+      <div class="legendary">
+        ${la ? `
+          <span class="legendary-group" title="Legendary actions: ${c.legendaryActionsLeft}/${la}. Refill at the start of its turn.">
+            <span class="legendary-label">Legendary</span>
+            <span class="legendary-pips">${pipRow(la, c.legendaryActionsLeft, "legendary-pip", `data-kind="actions"`, "Legendary action")}</span>
+          </span>` : ""}
+        ${lr ? `
+          <span class="legendary-group" title="Legendary resistance: ${c.legendaryResistanceLeft}/${lr} per day. Does not refill on its own.">
+            <span class="legendary-label">Resist</span>
+            <span class="legendary-pips">${pipRow(lr, c.legendaryResistanceLeft, "legendary-pip", `data-kind="resistance"`, "Legendary resistance")}</span>
+          </span>` : ""}
+      </div>`;
+  }
+
+  function economyHtml(c, round) {
+    const chip = (action, label, used, title, disabled = false) => `
+      <button class="chip chip--econ ${used ? "is-used" : ""}" type="button" data-action="${action}"
+              aria-pressed="${used}" title="${title}" ${disabled ? "disabled" : ""}>${label}</button>`;
+    const surpriseNote = c.surprised ? " Surprised: no reactions until its first turn ends." : "";
+    return `
+      <div class="card-economy" role="group" aria-label="Action economy">
+        ${chip("toggle-reaction", "Reaction", c.reactionUsed || c.surprised, `Reaction ${c.reactionUsed ? "used" : "available"}. Returns at the start of its turn.${surpriseNote}`, c.surprised)}
+        ${chip("toggle-bonus", "Bonus", c.bonusActionUsed, `Bonus action ${c.bonusActionUsed ? "used" : "available"} this turn.`)}
+        <button class="chip chip--ready ${c.readied ? "is-on" : ""}" type="button" data-action="toggle-ready" aria-pressed="${c.readied}"
+                title="Readied action. Lapses at the start of its next turn.">Ready</button>
+        ${round === 1 || c.surprised ? `
+          <button class="chip chip--surprised ${c.surprised ? "is-on" : ""}" type="button" data-action="toggle-surprised" aria-pressed="${c.surprised}"
+                  title="Surprised (round 1): can't move or act on its first turn, and can't react until that turn ends.">Surprised</button>` : ""}
+      </div>`;
+  }
+
+  function attackHtml(atk, i, interactive = true) {
+    const hit = atk.kind === "save"
+      ? `<span class="attack-save" title="Saving throw">DC ${atk.saveDc} ${atk.saveAbility.toUpperCase()}${atk.halfOnSave ? ", half on save" : ""}</span>`
+      : interactive
+        ? `<button class="attack-hit" type="button" data-action="roll-attack" data-attack-index="${i}" title="Roll to hit">${formatMod(atk.toHit)}</button>`
+        : `<span class="attack-hit" title="To hit">${formatMod(atk.toHit)}</span>`;
+    const dmg = damageText(atk);
+    const dmgHtml = dmg && interactive && R.attackDamageExpr(atk)
+      ? `<button class="attack-dmg" type="button" data-action="roll-damage" data-attack-index="${i}" title="Roll damage">${escapeHtml(dmg)}</button>`
+      : `<span class="attack-dmg">${escapeHtml(dmg)}</span>`;
+    return `
+      <div class="attack ${atk.kind === "save" ? "attack--save" : ""}">
+        <span class="attack-name" title="${escapeHtml(atk.name)}">${escapeHtml(atk.name)}</span>
+        ${hit}
+        ${dmgHtml}
+        ${atk.note ? `<span class="attack-note">${escapeHtml(atk.note)}</span>` : ""}
+      </div>`;
+  }
 
   const skillsText = (c) =>
     (c.skills || []).map((k) => `${SKILL_BY_KEY[k].name} ${formatMod(skillBonus(c, k))}`).join(" · ");
@@ -473,7 +637,7 @@
       <div class="card-recharges">
         ${c.recharges.map((r, i) => `
           <button class="chip chip--recharge ${r.available ? "is-ready" : "is-spent"}" type="button"
-                  data-action="toggle-recharge" data-recharge-index="${i}"
+                  data-action="toggle-recharge" data-recharge-index="${i}" aria-pressed="${!r.available}"
                   title="${r.available ? "Ready. Click to mark used." : `Spent. Recharges on ${rechargeLabel(r.min)}. Click to restore.`}">
             ${escapeHtml(r.name)} <small>${rechargeLabel(r.min)}</small>
           </button>`).join("")}
@@ -481,31 +645,47 @@
   }
 
   function cardHeadHtml(c, extraTools = "") {
+    const vs = vitalStatus(c);
     return `
       <header class="card-head">
-        <label class="card-initiative" title="Initiative">
-          <span class="card-initiative-label">Init</span>
-          <input type="number" value="${toInt(c.initiative, 0)}" data-field="initiative" aria-label="Initiative">
-        </label>
+        <div class="card-initiative" title="Initiative">
+          <label class="card-initiative-label" for="init-${c.instanceId}">Init</label>
+          <input id="init-${c.instanceId}" type="number" value="${toInt(c.initiative, 0)}" data-field="initiative" aria-label="Initiative for ${escapeHtml(c.name)}">
+          ${c.type === "lair" ? "" : `<button class="init-roll" type="button" data-action="roll-init" title="Roll d20 ${formatMod(initBonusOf(c))}" aria-label="Roll initiative for ${escapeHtml(c.name)}">${ICON_DIE}</button>`}
+        </div>
         <div class="card-title-wrap">
-          <h3 class="card-name" title="${escapeHtml(c.name)}">${escapeHtml(c.name)}</h3>
+          <h3 class="card-name"><button class="card-name-btn" type="button" data-action="open-detail" title="Open details for ${escapeHtml(c.name)}">${escapeHtml(c.name)}</button></h3>
           <span class="card-type">${escapeHtml(subtitleFor(c))}</span>
-          ${(() => { const vs = vitalStatus(c); return vs ? `<span class="card-down-tag card-down-tag--${vs.key}">${vs.label}</span>` : ""; })()}
+          ${vs ? `<span class="card-down-tag card-down-tag--${vs.key}">${vs.label}</span>` : ""}
         </div>
         <div class="card-tools">
-          <button class="icon-btn" type="button" data-action="open-detail" title="Open details" aria-label="Open details">${ICON_EXPAND}</button>
+          <button class="icon-btn" type="button" data-action="open-detail" title="Open details" aria-label="Open details for ${escapeHtml(c.name)}">${ICON_EXPAND}</button>
           ${extraTools}
-          <button class="icon-btn icon-btn--danger" type="button" data-action="remove-instance" title="Remove from encounter" aria-label="Remove from encounter">×</button>
+          <button class="icon-btn icon-btn--danger" type="button" data-action="remove-instance" title="Remove from encounter" aria-label="Remove ${escapeHtml(c.name)} from encounter">×</button>
         </div>
       </header>`;
   }
 
-  function renderCard(c, isCurrent) {
+  function damageTypeOptions(c) {
+    const selected = lastDamageType.get(c.instanceId) || "";
+    const tag = (t) => {
+      if ((c.damageImmunities || []).includes(t)) return " (immune)";
+      const res = (c.damageResistances || []).includes(t);
+      const vul = (c.damageVulnerabilities || []).includes(t);
+      return res && vul ? " (res + vuln)" : res ? " (resists)" : vul ? " (vulnerable)" : "";
+    };
+    return `<option value="">untyped</option>` + DAMAGE_TYPES.map((t) =>
+      `<option value="${t}" ${t === selected ? "selected" : ""}>${t}${tag(t)}</option>`).join("");
+  }
+
+  function renderCard(c, isCurrent, enc, isNew) {
+    const anim = isNew ? "is-new" : "";
     if (c.type === "lair") {
       return `
-        <article class="card card--lair ${isCurrent ? "is-current" : ""}" data-instance-id="${c.instanceId}">
+        <article class="card card--lair ${isCurrent ? "is-current" : ""} ${anim}" data-instance-id="${c.instanceId}" aria-current="${isCurrent ? "step" : "false"}">
           ${cardHeadHtml(c)}
-          <p class="lair-notes ${c.notes ? "" : "is-empty"}">${c.notes ? escapeHtml(c.notes) : "Click to add lair action notes."}</p>
+          ${isCurrent ? `<span class="sr-only">Current turn.</span>` : ""}
+          <p class="lair-notes ${c.notes ? "" : "is-empty"}">${c.notes ? escapeHtml(c.notes) : "No lair actions noted. Open details to add them."}</p>
         </article>`;
     }
 
@@ -517,13 +697,15 @@
     const scale = Math.max(max, cur + temp, 1);
     const isDown = cur <= 0;
     const isPc = c.type === "pc";
+    const compact = state.ui.cardMode === "compact";
+    const showMore = moreOpen.has(c.instanceId) ? moreOpen.get(c.instanceId) : !compact;
 
     const statsHtml = STAT_KEYS.map((k) => {
       const score = toInt(c.stats?.[k], 10);
       const m = modifier(score);
       const cls = m > 0 ? "is-pos" : m < 0 ? "is-neg" : "";
       return `
-        <div class="stat" title="${STAT_NAMES[k]} ${score}">
+        <div class="stat" title="${STAT_NAMES[k]} ${score}, save ${formatMod(saveBonus(c, k))}">
           <span class="stat-label">${k.toUpperCase()}</span>
           <span class="stat-mod ${cls}">${formatMod(m)}</span>
         </div>`;
@@ -532,33 +714,21 @@
     const info = [];
     if (c.speed) info.push(`<span><b>Speed</b> ${escapeHtml(c.speed)}</span>`);
     info.push(`<span><b>Init</b> ${formatMod(initBonusOf(c))}</span>`);
-    const skills = isPc ? "" : skillsText(c);
+    info.push(`<span><b>Passive</b> ${R.passivePerception(c)}</span>`);
+    const skills = skillsText(c);
+    const noteLine = (c.notes || "").split("\n").find((l) => l.trim()) || "";
 
     return `
-      <article class="card card--${c.type} ${isCurrent ? "is-current" : ""} ${isDown ? "is-down" : ""} ${R.isDead(c) ? "is-dead" : ""}"
-               data-instance-id="${c.instanceId}">
-        ${cardHeadHtml(c, `<button class="icon-btn" type="button" data-action="edit-instance" title="Edit stat block" aria-label="Edit">${ICON_EDIT}</button>`)}
-
-        ${statusChipsHtml(c)}
-        ${isPc && isDown ? deathSavesHtml(c) : ""}
-
-        <div class="card-vitals">
-          <div class="ac-shield" title="Armor Class">
-            <span class="ac-label">AC</span>
-            <span class="ac-value">${toInt(c.ac, 10)}</span>
-          </div>
-          <div class="stats-row">${statsHtml}</div>
-        </div>
-
-        ${info.length ? `<div class="card-info">${info.join("")}</div>` : ""}
-        ${skills ? `<div class="card-skills">${escapeHtml(skills)}</div>` : ""}
-        ${c.attacks?.length ? `<div class="card-attacks">${c.attacks.map(attackHtml).join("")}</div>` : ""}
-        ${rechargeChipsHtml(c)}
+      <article class="card card--${c.type} ${isCurrent ? "is-current" : ""} ${isDown ? "is-down" : ""} ${R.isDead(c) ? "is-dead" : ""} ${anim}"
+               data-instance-id="${c.instanceId}" aria-current="${isCurrent ? "step" : "false"}">
+        ${cardHeadHtml(c, `<button class="icon-btn" type="button" data-action="edit-instance" title="Edit stat block" aria-label="Edit ${escapeHtml(c.name)}">${ICON_EDIT}</button>`)}
+        ${isCurrent ? `<span class="sr-only">Current turn.</span>` : ""}
 
         <div class="hp-block">
           <div class="hp-top">
-            <span class="hp-label">Hit Points</span>
-            <label class="hp-temp ${temp ? "has-temp" : ""}" title="Temporary hit points">
+            <span class="hp-label">HP</span>
+            <span class="hp-state hp-state--${barClass || "ok"}">${hpStateLabel(c)}</span>
+            <label class="hp-temp ${temp ? "has-temp" : ""}" title="Temporary hit points (direct edit)">
               <span>Temp</span>
               <input type="number" min="0" value="${temp || ""}" placeholder="0" data-field="hpTemp" aria-label="Temporary HP">
             </label>
@@ -568,13 +738,16 @@
               <input class="hp-max" type="number" min="0" value="${max}" data-field="hpMax" aria-label="Max HP">
             </div>
           </div>
-          <div class="hp-bar">
+          <div class="hp-bar" role="progressbar" aria-label="${escapeHtml(c.name)} hit points"
+               aria-valuemin="0" aria-valuemax="${max}" aria-valuenow="${cur}"
+               aria-valuetext="${cur} of ${max} HP${temp ? `, ${temp} temporary` : ""}, ${hpStateLabel(c)}">
             <div class="hp-bar-fill ${barClass}" style="width:${(cur / scale) * 100}%"></div>
             ${temp ? `<div class="hp-bar-temp" style="width:${(temp / scale) * 100}%"></div>` : ""}
           </div>
           <div class="hp-adjust">
             <input type="number" min="0" placeholder="1" data-field="hpDelta"
                    aria-label="Damage, healing or temp HP amount" title="Enter applies damage, Shift+Enter heals">
+            <select data-field="dmgType" aria-label="Damage type" title="Damage type: resistances, immunities and vulnerabilities apply">${damageTypeOptions(c)}</select>
             ${isPc && isDown && !R.isDead(c) ? `
               <label class="crit-toggle" title="Damage at 0 HP from a critical hit counts as two death save failures">
                 <input type="checkbox" data-field="crit"> Crit
@@ -587,8 +760,60 @@
           </div>
         </div>
 
+        <div class="card-vitals">
+          <div class="ac-shield" title="Armor Class">
+            <span class="ac-label">AC</span>
+            <span class="ac-value">${toInt(c.ac, 10)}</span>
+          </div>
+          <div class="card-vitals-side">
+            ${economyHtml(c, enc.round)}
+            ${legendaryHtml(c)}
+          </div>
+        </div>
+
+        ${statusChipsHtml(c, enc.round)}
+        ${isPc && isDown ? deathSavesHtml(c) : ""}
+        ${noteLine ? `<p class="card-notes" title="DM notes"><span class="sr-only">Notes: </span>${escapeHtml(noteLine)}</p>` : ""}
+        ${rechargeChipsHtml(c)}
         ${spellBlockHtml(c)}
+
+        <details class="card-more" data-card-more ${showMore ? "open" : ""}>
+          <summary class="card-more-summary">Stats &amp; attacks</summary>
+          <div class="card-more-body">
+            <div class="stats-row">${statsHtml}</div>
+            <div class="card-info">${info.join("")}</div>
+            ${skills ? `<div class="card-skills">${escapeHtml(skills)}</div>` : ""}
+            ${c.multiattack ? `<p class="card-multiattack">${escapeHtml(c.multiattack)}</p>` : ""}
+            ${c.attacks?.length ? `<div class="card-attacks">${c.attacks.map((a, i) => attackHtml(a, i)).join("")}</div>` : ""}
+          </div>
+        </details>
       </article>`;
+  }
+
+  /* ---------- Combat log ---------- */
+  function renderLog() {
+    const drawer = $("#log-drawer");
+    const open = state.ui.logOpen && state.ui.view === "active" && !!activeEncounter();
+    drawer.hidden = !open;
+    $("#btn-toggle-log").setAttribute("aria-pressed", String(!!state.ui.logOpen));
+    $("#btn-toggle-log").classList.toggle("is-on", !!state.ui.logOpen);
+    if (!open) return;
+    const log = activeEncounter().log;
+    const list = $("#log-list");
+    list.innerHTML = log.length
+      ? log.map((e) => `
+          <li class="log-entry log-entry--${e.kind}">
+            <span class="log-round" title="Round ${e.round}">R${e.round}</span>
+            <span class="log-text">${escapeHtml(e.text)}</span>
+          </li>`).join("")
+      : `<li class="log-empty">Nothing yet. Damage, healing, conditions, turns and rolls show up here.</li>`;
+    list.scrollTop = list.scrollHeight;
+  }
+
+  function renderDice() {
+    $("#dice-panel").hidden = !state.ui.diceOpen;
+    $("#btn-toggle-dice").setAttribute("aria-pressed", String(!!state.ui.diceOpen));
+    $("#btn-toggle-dice").classList.toggle("is-on", !!state.ui.diceOpen);
   }
 
   /* ---------- Library ---------- */
@@ -606,7 +831,7 @@
     host.innerHTML = list.map((t) => {
       const lead = type === "pc"
         ? `<span><b>Lvl ${t.level}</b>${t.cls ? ` ${escapeHtml(t.cls)}` : ""}${t.race ? ` · ${escapeHtml(t.race)}` : ""}</span>`
-        : (t.cr ? `<span>CR <b>${t.cr}</b></span>` : "");
+        : (t.cr ? `<span>CR <b>${t.cr}</b> <small>${R.xpForCr(t.cr).toLocaleString()} XP</small></span>` : "");
       return `
         <div class="lib-row lib-row--${type}" data-template-id="${t.id}">
           <div>
@@ -617,12 +842,13 @@
               <span>AC <b>${toInt(t.ac, 10)}</b></span>
               <span>${STAT_KEYS.map((k) => `${k.toUpperCase()} ${formatMod(modifier(t.stats?.[k]))}`).join(" · ")}</span>
               ${t.attacks?.length ? `<span>⚔ <b>${t.attacks.length}</b></span>` : ""}
+              ${t.legendaryActions ? `<span>Legendary <b>${t.legendaryActions}</b></span>` : ""}
               ${t.spellSlots?.length ? `<span>✦ <b>${t.spellSlots.length}</b> spell level${t.spellSlots.length === 1 ? "" : "s"}</span>` : ""}
             </div>
           </div>
           <div class="lib-actions">
-            <button class="icon-btn" type="button" data-action="edit-template" title="Edit" aria-label="Edit">${ICON_EDIT}</button>
-            <button class="icon-btn icon-btn--danger" type="button" data-action="delete-template" title="Delete" aria-label="Delete">${ICON_TRASH}</button>
+            <button class="icon-btn" type="button" data-action="edit-template" title="Edit" aria-label="Edit ${escapeHtml(t.name)}">${ICON_EDIT}</button>
+            <button class="icon-btn icon-btn--danger" type="button" data-action="delete-template" title="Delete" aria-label="Delete ${escapeHtml(t.name)}">${ICON_TRASH}</button>
           </div>
         </div>`;
     }).join("");
@@ -642,12 +868,26 @@
   }
 
   /* ---------- Toast ---------- */
-  function toast(message) {
+  const TOAST_MAX = 5;
+
+  function toast(message, { action = null, duration = 0 } = {}) {
+    const stack = $("#toast-stack");
     const el = document.createElement("div");
-    el.className = "toast";
-    el.textContent = message;
-    $("#toast-stack").appendChild(el);
-    setTimeout(() => el.remove(), 3000);
+    el.className = `toast${action ? " toast--action" : ""}`;
+    const text = document.createElement("span");
+    text.textContent = message;
+    el.appendChild(text);
+    if (action) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "toast-action";
+      btn.textContent = action.label;
+      btn.addEventListener("click", () => { el.remove(); action.run(); });
+      el.appendChild(btn);
+    }
+    stack.appendChild(el);
+    while (stack.children.length > TOAST_MAX) stack.firstElementChild.remove();
+    setTimeout(() => el.remove(), duration || (action ? 7000 : 3000));
   }
 
   /* ---------- Prompt (text) ---------- */
@@ -687,15 +927,19 @@
   const confirmModal = $("#confirm-modal");
   let confirmResolve = null;
 
-  function confirmDialog({ title, html, okLabel = "Delete" }) {
+  /** `html` must already be escaped by the caller. */
+  function confirmDialog({ title, html, okLabel = "Delete", danger = true }) {
     return new Promise((resolve) => {
       confirmResolve = resolve;
       $("#confirm-title").textContent = title;
       $("#confirm-text").innerHTML = html;
-      $("#confirm-submit").textContent = okLabel;
+      const submit = $("#confirm-submit");
+      submit.textContent = okLabel;
+      submit.className = `btn ${danger ? "btn-danger" : "btn-primary"}`;
+      confirmModal.classList.toggle("modal-danger", danger);
       confirmModal.returnValue = "cancel";
       confirmModal.showModal();
-      requestAnimationFrame(() => $("#confirm-submit").focus());
+      requestAnimationFrame(() => submit.focus());
     });
   }
 
@@ -709,10 +953,42 @@
   });
   wireDialogChrome(confirmModal);
 
+  /* ---------- Choice (pick one) ---------- */
+  const choiceModal = $("#choice-modal");
+  let choiceResolve = null;
+  let choiceValue = null;
+
+  function choiceDialog({ title, text = "", options }) {
+    return new Promise((resolve) => {
+      choiceResolve = resolve;
+      choiceValue = null;
+      $("#choice-title").textContent = title;
+      $("#choice-text").textContent = text;
+      $("#choice-list").innerHTML = options.map((o, i) => `
+        <button class="choice-btn" type="button" data-choice="${i}">
+          <span>${escapeHtml(o.label)}</span>${o.hint ? `<small>${escapeHtml(o.hint)}</small>` : ""}
+        </button>`).join("");
+      $("#choice-list").onclick = (e) => {
+        const btn = e.target.closest("[data-choice]");
+        if (!btn) return;
+        choiceValue = options[toInt(btn.dataset.choice, 0)].value;
+        choiceModal.close("ok");
+      };
+      choiceModal.returnValue = "cancel";
+      choiceModal.showModal();
+      requestAnimationFrame(() => $(".choice-btn", choiceModal)?.focus());
+    });
+  }
+  choiceModal.addEventListener("close", () => {
+    const r = choiceResolve; choiceResolve = null;
+    if (r) r(choiceModal.returnValue === "ok" ? choiceValue : null);
+  });
+  wireDialogChrome(choiceModal);
+
   /* ---------- Creature builder modal ---------- */
   const creatureModal = $("#creature-modal");
   const creatureForm = $("#creature-form");
-  /** @type {{mode:string, type:string, templateId?:string, instanceId?:string}|null} */
+  /** @type {{mode:string, type:string, templateId?:string, instanceId?:string, seed?:object}|null} */
   let creatureCtx = null;
 
   const abilityOptions = (selected) =>
@@ -732,26 +1008,40 @@
             <option value="long" ${slot.recovery !== "short" ? "selected" : ""}>Long rest</option>
             <option value="short" ${slot.recovery === "short" ? "selected" : ""}>Short rest</option>
           </select></label>
-        <button class="icon-btn icon-btn--danger" type="button" data-action="remove-row" title="Remove level" aria-label="Remove level">×</button>
+        <button class="icon-btn icon-btn--danger" type="button" data-action="remove-row" title="Remove level" aria-label="Remove spell level">×</button>
       </div>`;
   }
 
   function attackRowHtml(atk = normalizeAttack({ name: "" })) {
     return `
-      <div class="attack-row" data-row data-auto-hit="${atk.autoToHit ? 1 : 0}" data-auto-dmg="${atk.autoDmg ? 1 : 0}">
-        <label class="field"><span class="field-label">Attack</span>
+      <div class="attack-row" data-row data-kind="${atk.kind}" data-auto-hit="${atk.autoToHit ? 1 : 0}"
+           data-auto-dmg="${atk.autoDmg ? 1 : 0}" data-auto-dc="${atk.autoSaveDc ? 1 : 0}">
+        <label class="field atk-name"><span class="field-label">Name</span>
           <input type="text" data-atk="name" value="${escapeHtml(atk.name === "Attack" ? "" : atk.name)}" placeholder="Scimitar" autocomplete="off"></label>
-        <label class="field"><span class="field-label">Ability</span>
-          <select data-atk="ability">${abilityOptions(atk.ability)}</select></label>
-        <label class="field"><span class="field-label">To Hit</span>
+        <label class="field atk-kind"><span class="field-label">Kind</span>
+          <select data-atk="kind">
+            <option value="attack" ${atk.kind === "attack" ? "selected" : ""}>Attack roll</option>
+            <option value="save" ${atk.kind === "save" ? "selected" : ""}>Saving throw</option>
+          </select></label>
+        <label class="field atk-ability"><span class="field-label">Ability</span>
+          <select data-atk="ability" title="The creature's ability used for to hit, save DC and damage">${abilityOptions(atk.ability)}</select></label>
+        <label class="field atk-attack-only"><span class="field-label">To Hit</span>
           <input type="number" data-atk="toHit" value="${atk.toHit}" title="Auto: ability mod + proficiency. Type to override; clear to re-enable auto."></label>
-        <label class="field"><span class="field-label">Dice</span>
+        <label class="field atk-save-only"><span class="field-label">Save DC</span>
+          <input type="number" data-atk="saveDc" value="${atk.saveDc}" title="Auto: 8 + proficiency + ability mod. Type to override; clear to re-enable auto."></label>
+        <label class="field atk-save-only"><span class="field-label">Target saves</span>
+          <select data-atk="saveAbility">${abilityOptions(atk.saveAbility)}</select></label>
+        <label class="checkbox-field checkbox-field--sm atk-save-only atk-half">
+          <input type="checkbox" data-atk="halfOnSave" ${atk.halfOnSave ? "checked" : ""}> <span>Half on save</span></label>
+        <label class="field atk-dice"><span class="field-label">Dice</span>
           <input type="text" data-atk="dmgDice" value="${escapeHtml(atk.dmgDice)}" placeholder="1d6" autocomplete="off"></label>
-        <label class="field"><span class="field-label">Bonus</span>
+        <label class="field atk-bonus"><span class="field-label">Bonus</span>
           <input type="number" data-atk="dmgBonus" value="${atk.dmgBonus}" title="Auto: ability mod. Type to override; clear to re-enable auto."></label>
-        <label class="field"><span class="field-label">Type</span>
+        <label class="field atk-type"><span class="field-label">Type</span>
           <input type="text" data-atk="dmgType" value="${escapeHtml(atk.dmgType)}" list="damage-types" placeholder="slashing" autocomplete="off"></label>
-        <button class="icon-btn icon-btn--danger" type="button" data-action="remove-row" title="Remove attack" aria-label="Remove attack">×</button>
+        <label class="field atk-note"><span class="field-label">Note</span>
+          <input type="text" data-atk="note" value="${escapeHtml(atk.note)}" placeholder="plus 2d6 poison" autocomplete="off"></label>
+        <button class="icon-btn icon-btn--danger atk-remove" type="button" data-action="remove-row" title="Remove attack" aria-label="Remove attack">×</button>
       </div>`;
   }
 
@@ -768,10 +1058,11 @@
       </div>`;
   }
 
-  /** Live-recalculate everything derived from ability scores and CR. */
+  /** Live-recalculate everything derived from ability scores, CR and level. */
   function refreshFormCalcs() {
     const f = creatureForm.elements;
-    const prof = profFromCr(f.cr.value);
+    const isPc = creatureCtx?.type === "pc";
+    const prof = isPc ? profFromLevel(f.level.value) : profFromCr(f.cr.value);
     const mods = {};
     STAT_KEYS.forEach((k) => {
       mods[k] = modifier(f[k].value);
@@ -781,19 +1072,39 @@
     });
     f.initBonus.placeholder = formatMod(mods.dex).replace("−", "-");
     $("#skills-prof-hint").textContent = `proficiency ${formatMod(prof)}`;
-    $$("[data-skill-bonus]", creatureForm).forEach((el) => {
-      el.textContent = formatMod(mods[SKILL_BY_KEY[el.dataset.skillBonus].ability] + prof);
+    $("#saves-prof-hint").textContent = `proficiency ${formatMod(prof)}`;
+    $$("[data-save-bonus]", creatureForm).forEach((el) => {
+      const k = el.dataset.saveBonus;
+      el.textContent = formatMod(mods[k] + ($(`[data-save="${k}"]`, creatureForm).checked ? prof : 0));
     });
+    let perception = 0;
+    $$("[data-skill-bonus]", creatureForm).forEach((el) => {
+      const key = el.dataset.skillBonus;
+      const proficient = $(`[data-skill="${key}"]`, creatureForm).checked;
+      const expert = proficient && $(`[data-expertise="${key}"]`, creatureForm).checked;
+      const bonus = mods[SKILL_BY_KEY[key].ability] + (proficient ? prof : 0) + (expert ? prof : 0);
+      if (key === "perception") perception = bonus;
+      el.textContent = formatMod(bonus);
+    });
+    $("#passive-hint").textContent = `passive Perception ${10 + perception}`;
     $$(".attack-row", creatureForm).forEach((row) => {
       const m = mods[$('[data-atk="ability"]', row).value] ?? 0;
       const hit = $('[data-atk="toHit"]', row);
       const dmg = $('[data-atk="dmgBonus"]', row);
+      const dc = $('[data-atk="saveDc"]', row);
+      row.dataset.kind = $('[data-atk="kind"]', row).value;
       if (row.dataset.autoHit === "1") hit.value = m + prof;
       if (row.dataset.autoDmg === "1") dmg.value = m;
+      if (row.dataset.autoDc === "1") dc.value = 8 + prof + m;
       hit.classList.toggle("is-auto", row.dataset.autoHit === "1");
       dmg.classList.toggle("is-auto", row.dataset.autoDmg === "1");
+      dc.classList.toggle("is-auto", row.dataset.autoDc === "1");
     });
   }
+
+  const LIST_FIELDS = ["damageResistances", "damageImmunities", "damageVulnerabilities", "conditionImmunities"];
+  const TEXT_FIELDS = ["senses", "languages", "damageNotes"];
+  const ENEMY_TEXT_FIELDS = ["creatureType", "alignment", "multiattack", "traits", "actions", "reactions", "legendaryText"];
 
   function fillCreatureForm(data, type) {
     const f = creatureForm.elements;
@@ -804,54 +1115,53 @@
     f.speed.value = block.speed;
     f.initiative.value = toInt(data.initiative, 0);
     STAT_KEYS.forEach((k) => { f[k].value = block.stats[k]; });
+    f.initBonus.value = block.initBonus ?? "";
 
     f.level.value = block.level ?? 1;
-    f.initBonus.value = block.initBonus ?? "";
     f.cls.value = block.cls ?? "";
     f.race.value = block.race ?? "";
-
     f.cr.value = block.cr ?? "";
-    $$("[data-skill]", creatureForm).forEach((cb) => { cb.checked = (block.skills || []).includes(cb.dataset.skill); });
+    f.legendaryActions.value = block.legendaryActions ?? 0;
+    f.legendaryResistance.value = block.legendaryResistance ?? 0;
+    [...TEXT_FIELDS, ...ENEMY_TEXT_FIELDS].forEach((k) => { f[k].value = block[k] ?? ""; });
+
+    $$("[data-save]", creatureForm).forEach((cb) => { cb.checked = block.saves.includes(cb.dataset.save); });
+    $$("[data-skill]", creatureForm).forEach((cb) => { cb.checked = block.skills.includes(cb.dataset.skill); });
+    $$("[data-expertise]", creatureForm).forEach((cb) => { cb.checked = block.expertise.includes(cb.dataset.expertise); });
+    $$("[data-def]", creatureForm).forEach((cb) => { cb.checked = (block[cb.dataset.def] || []).includes(cb.value); });
+
     $("#attack-rows").innerHTML = (block.attacks || []).map(attackRowHtml).join("");
     $("#recharge-rows").innerHTML = (block.recharges || []).map(rechargeRowHtml).join("");
-    $("#skills-details").open = (block.skills || []).length > 0;
-    $("#attacks-details").open = (block.attacks || []).length > 0;
-    $("#recharge-details").open = (block.recharges || []).length > 0;
-
     $("#spell-rows").innerHTML = block.spellSlots.map(spellRowHtml).join("");
+
+    $("#saves-details").open = block.saves.length > 0;
+    $("#skills-details").open = block.skills.length > 0;
+    $("#senses-details").open = !!(block.senses || block.languages);
+    $("#defenses-details").open = LIST_FIELDS.some((k) => block[k].length) || !!block.damageNotes;
+    $("#attacks-details").open = (block.attacks || []).length > 0 || !!block.multiattack;
+    $("#recharge-details").open = (block.recharges || []).length > 0;
+    $("#legendary-details").open = !!(block.legendaryActions || block.legendaryResistance || block.legendaryText);
+    $("#text-details").open = !!(block.traits || block.actions || block.reactions);
     $("#spell-details").open = block.spellSlots.length > 0;
     f.saveToLibrary.checked = false;
     refreshFormCalcs();
   }
 
+  /** Read the builder into a normalised template of the given type. */
   function readCreatureForm(type) {
     const f = creatureForm.elements;
-    const values = {
+    const checked = (attr) => $$(`[${attr}]`, creatureForm).filter((cb) => cb.checked);
+    const shared = {
       name: f.name.value,
-      hpMax: f.hpMax.value,
+      hp: { max: f.hpMax.value },
       ac: f.ac.value,
       speed: f.speed.value,
-      initiative: f.initiative.value,
-      level: f.level.value,
-      initBonus: f.initBonus.value.trim(),
-      cls: f.cls.value,
-      race: f.race.value,
-      cr: f.cr.value,
-      skills: $$("[data-skill]", creatureForm).filter((cb) => cb.checked).map((cb) => cb.dataset.skill),
-      attacks: $$(".attack-row", creatureForm).map((row) => ({
-        name: $('[data-atk="name"]', row).value,
-        ability: $('[data-atk="ability"]', row).value,
-        toHit: $('[data-atk="toHit"]', row).value,
-        dmgDice: $('[data-atk="dmgDice"]', row).value,
-        dmgBonus: $('[data-atk="dmgBonus"]', row).value,
-        dmgType: $('[data-atk="dmgType"]', row).value,
-        autoToHit: row.dataset.autoHit === "1",
-        autoDmg: row.dataset.autoDmg === "1",
-      })),
-      recharges: $$(".recharge-row", creatureForm).map((row) => ({
-        name: $('[data-recharge="name"]', row).value,
-        min: $('[data-recharge="min"]', row).value,
-      })),
+      stats: Object.fromEntries(STAT_KEYS.map((k) => [k, f[k].value])),
+      // Blank init bonus falls back to the DEX modifier.
+      initBonus: f.initBonus.value.trim() === "" ? null : f.initBonus.value,
+      saves: checked("data-save").map((cb) => cb.dataset.save),
+      skills: checked("data-skill").map((cb) => cb.dataset.skill),
+      expertise: checked("data-expertise").map((cb) => cb.dataset.expertise),
       spellSlots: $$(".spell-row", creatureForm).map((row) => ({
         level: $('[data-spell="level"]', row).value,
         current: $('[data-spell="current"]', row).value,
@@ -859,13 +1169,49 @@
         recovery: $('[data-spell="recovery"]', row).value,
       })),
     };
-    STAT_KEYS.forEach((k) => { values[k] = f[k].value; });
-    return { block: buildStatBlock(values, type), initiative: toInt(values.initiative, 0), saveToLibrary: f.saveToLibrary.checked };
+    TEXT_FIELDS.forEach((k) => { shared[k] = f[k].value; });
+    LIST_FIELDS.forEach((k) => { shared[k] = $$(`[data-def="${k}"]`, creatureForm).filter((cb) => cb.checked).map((cb) => cb.value); });
+
+    const specific = type === "pc" ? {
+      level: f.level.value,
+      cls: f.cls.value,
+      race: f.race.value,
+    } : {
+      cr: f.cr.value,
+      legendaryActions: f.legendaryActions.value,
+      legendaryResistance: f.legendaryResistance.value,
+      ...Object.fromEntries(ENEMY_TEXT_FIELDS.map((k) => [k, f[k].value])),
+      attacks: $$(".attack-row", creatureForm).map((row) => ({
+        name: $('[data-atk="name"]', row).value,
+        kind: $('[data-atk="kind"]', row).value,
+        ability: $('[data-atk="ability"]', row).value,
+        toHit: $('[data-atk="toHit"]', row).value,
+        saveDc: $('[data-atk="saveDc"]', row).value,
+        saveAbility: $('[data-atk="saveAbility"]', row).value,
+        halfOnSave: $('[data-atk="halfOnSave"]', row).checked,
+        dmgDice: $('[data-atk="dmgDice"]', row).value,
+        dmgBonus: $('[data-atk="dmgBonus"]', row).value,
+        dmgType: $('[data-atk="dmgType"]', row).value,
+        note: $('[data-atk="note"]', row).value,
+        autoToHit: row.dataset.autoHit === "1",
+        autoDmg: row.dataset.autoDmg === "1",
+        autoSaveDc: row.dataset.autoDc === "1",
+      })).filter((a) => String(a.name).trim()),
+      recharges: $$(".recharge-row", creatureForm).map((row) => ({
+        name: $('[data-recharge="name"]', row).value,
+        min: $('[data-recharge="min"]', row).value,
+      })).filter((r) => String(r.name).trim()),
+    };
+    return {
+      block: normalizeTemplate({ ...shared, ...specific }, type),
+      initiative: toInt(f.initiative.value, 0),
+      saveToLibrary: f.saveToLibrary.checked,
+    };
   }
 
   /**
    * Modes:
-   *   library-new    { type }                  → new template in library
+   *   library-new    { type, seed? }           → new template in library (seed prefills)
    *   library-edit   { type, templateId }      → edit template
    *   encounter-new  { type }                  → new one-off instance in active encounter
    *   instance-edit  { instanceId }            → edit an instance's stat block
@@ -874,7 +1220,7 @@
     creatureCtx = ctx;
     const typeLabel = ctx.type === "pc" ? "Player Character" : "Enemy";
     const title = {
-      "library-new": `New ${typeLabel}`,
+      "library-new": ctx.seed ? `New ${typeLabel} (variant)` : `New ${typeLabel}`,
       "library-edit": `Edit ${typeLabel}`,
       "encounter-new": `Add ${typeLabel} to Encounter`,
       "instance-edit": "Edit Combatant",
@@ -887,12 +1233,9 @@
     $("#creature-initiative-field").classList.toggle("hidden", !showInit);
     $("#save-to-library-field").classList.toggle("hidden", ctx.mode !== "encounter-new");
 
-    let seed = { name: "", hp: { max: 10 }, ac: 10, speed: "30 ft.", stats: {}, spellSlots: [], initiative: 0, level: 1, cr: "1" };
+    let seed = ctx.seed || { name: "", hp: { max: 10 }, ac: 10, speed: "30 ft.", stats: {}, spellSlots: [], initiative: 0, level: 1, cr: "1" };
     if (ctx.mode === "library-edit") seed = findTemplate(ctx.templateId) || seed;
-    if (ctx.mode === "instance-edit") {
-      const enc = activeEncounter();
-      seed = enc?.combatants.find((c) => c.instanceId === ctx.instanceId) || seed;
-    }
+    if (ctx.mode === "instance-edit") seed = findCombatant(ctx.instanceId) || seed;
     fillCreatureForm(seed, ctx.type);
 
     creatureModal.showModal();
@@ -906,6 +1249,7 @@
 
     const ctx = creatureCtx;
     const { block, initiative, saveToLibrary } = readCreatureForm(ctx.type);
+    let undoLabel = null;
 
     if (ctx.mode === "library-new") {
       libraryList(ctx.type).push({ id: uuid(), ...block });
@@ -933,7 +1277,9 @@
       inst.name = uniqueName(enc, block.name);
       enc.combatants.push(inst);
       sortEncounter(enc);
+      logEntry("info", `${inst.name} joined the encounter.`, enc);
       toast(`${inst.name} joins the fray.`);
+      undoLabel = `Add ${inst.name}`;
     }
 
     if (ctx.mode === "instance-edit") {
@@ -949,14 +1295,16 @@
         });
         enc.combatants[idx] = normalizeInstance({
           ...old, ...block, initiative, recharges,
+          initRank: initiative === old.initiative ? old.initRank : 0,
           hp: { max: block.hp.max, current, temp: old.hp.temp },
         });
         sortEncounter(enc);
+        undoLabel = `Edit ${old.name}`;
       }
     }
 
     creatureModal.close("ok");
-    commit();
+    commit({ undo: undoLabel });
   });
 
   /* Builder: repeatable rows */
@@ -983,20 +1331,21 @@
   });
 
   /* Builder: live calculations. Typing in an auto field takes it over. */
+  const AUTO_FIELDS = { toHit: "autoHit", dmgBonus: "autoDmg", saveDc: "autoDc" };
   creatureForm.addEventListener("input", (e) => {
-    const atk = e.target.dataset?.atk;
+    const flag = AUTO_FIELDS[e.target.dataset?.atk];
     const row = e.target.closest(".attack-row");
-    if (row && atk === "toHit") row.dataset.autoHit = "0";
-    if (row && atk === "dmgBonus") row.dataset.autoDmg = "0";
+    if (row && flag) row.dataset[flag] = "0";
+    // Expertise needs proficiency, and dropping proficiency drops expertise.
+    if (e.target.dataset?.expertise && e.target.checked) $(`[data-skill="${e.target.dataset.expertise}"]`, creatureForm).checked = true;
+    if (e.target.dataset?.skill && !e.target.checked) $(`[data-expertise="${e.target.dataset.skill}"]`, creatureForm).checked = false;
     refreshFormCalcs();
   });
   /* Clearing an overridden auto field hands it back to the calculator. */
   creatureForm.addEventListener("change", (e) => {
-    const atk = e.target.dataset?.atk;
+    const flag = AUTO_FIELDS[e.target.dataset?.atk];
     const row = e.target.closest(".attack-row");
-    if (!row || e.target.value.trim() !== "") return;
-    if (atk === "toHit") row.dataset.autoHit = "1";
-    if (atk === "dmgBonus") row.dataset.autoDmg = "1";
+    if (row && flag && e.target.value.trim() === "") row.dataset[flag] = "1";
     refreshFormCalcs();
   });
 
@@ -1005,6 +1354,8 @@
   /* ---------- Detail modal ---------- */
   const detailModal = $("#detail-modal");
   let detailId = null;
+  /** Rounds typed into the duration box, kept while the modal re-renders. */
+  let conditionRounds = "";
 
   function openDetail(instanceId) {
     detailId = instanceId;
@@ -1014,13 +1365,16 @@
 
   function renderDetail() {
     if (!detailModal.open) return;
-    const c = activeEncounter()?.combatants.find((x) => x.instanceId === detailId);
+    const c = findCombatant(detailId);
     if (!c) { detailModal.close(); return; }
 
     $("#detail-title").textContent = c.name;
     $("#detail-subtitle").textContent = subtitleFor(c);
     $("#detail-edit").classList.toggle("hidden", c.type === "lair");
-    $("#detail-body").innerHTML = c.type === "lair" ? lairDetailHtml(c) : creatureDetailHtml(c);
+    const body = $("#detail-body");
+    const scroll = body.scrollTop;
+    body.innerHTML = c.type === "lair" ? lairDetailHtml(c) : creatureDetailHtml(c, activeEncounter());
+    body.scrollTop = scroll;
   }
 
   function lairDetailHtml(c) {
@@ -1037,7 +1391,16 @@
       </section>`;
   }
 
-  function creatureDetailHtml(c) {
+  /** A titled, escaped block of free text with line breaks kept. */
+  const textSection = (title, body) => (body && body.trim() ? `
+    <section class="detail-section">
+      <h3 class="detail-section-title">${title}</h3>
+      <p class="detail-prose">${escapeHtml(body.trim())}</p>
+    </section>` : "");
+
+  const listLine = (label, items) => (items && items.length ? `<p class="detail-text"><b>${label}</b> ${escapeHtml(items.join(", "))}</p>` : "");
+
+  function creatureDetailHtml(c, enc) {
     const isPc = c.type === "pc";
     const summary = [
       ["AC", toInt(c.ac, 10)],
@@ -1045,33 +1408,58 @@
       ["Speed", escapeHtml(c.speed || "—")],
       ["Initiative", toInt(c.initiative, 0)],
       ["Init Bonus", `${formatMod(initBonusOf(c))}${c.initBonus === null ? " <small>DEX</small>" : ""}`],
-      isPc ? null : ["CR", c.cr ? `${c.cr} <small>prof ${formatMod(profFromCr(c.cr))}</small>` : "—"],
-    ].filter(Boolean).map(([label, value]) => `
+      ["Passive Perc.", R.passivePerception(c)],
+      isPc
+        ? ["Proficiency", formatMod(R.profOf(c))]
+        : ["CR", c.cr ? `${c.cr} <small>${R.xpForCr(c.cr).toLocaleString()} XP · prof ${formatMod(profFromCr(c.cr))}</small>` : "—"],
+    ].map(([label, value]) => `
       <div class="detail-stat"><span class="detail-stat-label">${label}</span><span class="detail-stat-value">${value}</span></div>`).join("");
 
     const abilities = STAT_KEYS.map((k) => {
       const score = toInt(c.stats?.[k], 10);
+      const prof = c.saves.includes(k);
       return `
-        <div class="detail-ability" title="${STAT_NAMES[k]}">
+        <div class="detail-ability ${prof ? "is-save-prof" : ""}" title="${STAT_NAMES[k]}${prof ? ", proficient save" : ""}">
           <span class="stat-label">${k.toUpperCase()}</span>
           <span class="detail-ability-score">${score}</span>
           <span class="detail-ability-mod">${formatMod(modifier(score))}</span>
+          <span class="detail-ability-save">Save ${formatMod(saveBonus(c, k))}</span>
         </div>`;
     }).join("");
 
-    const conditions = CONDITIONS.map((cond) => `
-      <button class="chip chip--toggle ${c.conditions.includes(cond) ? "is-on" : ""}" type="button"
-              data-action="toggle-condition" data-condition="${cond}" aria-pressed="${c.conditions.includes(cond)}"
-              title="${escapeHtml(CONDITION_EFFECTS[cond])}">${cond}</button>`).join("");
+    const typeLine = isPc ? "" : [c.creatureType, c.alignment].filter(Boolean).join(", ");
+    const statLines = [
+      typeLine ? `<p class="detail-text detail-text--italic">${escapeHtml(typeLine)}</p>` : "",
+      c.skills.length ? `<p class="detail-text"><b>Skills</b> ${escapeHtml(skillsText(c))}</p>` : "",
+      listLine("Vulnerabilities", c.damageVulnerabilities),
+      listLine("Resistances", c.damageResistances),
+      listLine("Immunities", c.damageImmunities),
+      c.damageNotes ? `<p class="detail-text"><b>Defense notes</b> ${escapeHtml(c.damageNotes)}</p>` : "",
+      listLine("Condition immunities", c.conditionImmunities),
+      `<p class="detail-text"><b>Senses</b> ${escapeHtml([c.senses, `passive Perception ${R.passivePerception(c)}`].filter(Boolean).join(", "))}</p>`,
+      c.languages ? `<p class="detail-text"><b>Languages</b> ${escapeHtml(c.languages)}</p>` : "",
+    ].join("");
+
+    const conditions = CONDITIONS.map((cond) => {
+      const on = R.hasCondition(c, cond);
+      const immune = R.isImmuneTo(c, cond);
+      return `
+        <button class="chip chip--toggle ${on ? "is-on" : ""} ${immune ? "is-immune" : ""}" type="button"
+                data-action="toggle-condition" data-condition="${cond}" aria-pressed="${on}"
+                title="${escapeHtml(CONDITION_EFFECTS[cond])}${immune ? " (immune)" : ""}">${cond}</button>`;
+    }).join("");
     const activeEffects = c.conditions.length ? `
       <ul class="effect-list">
-        ${c.conditions.map((cond) => `<li><b>${cond}</b> ${escapeHtml(CONDITION_EFFECTS[cond])}</li>`).join("")}
+        ${c.conditions.map((cond) => {
+          const left = R.roundsLeft(cond, enc.round);
+          return `<li><b>${cond.name}</b>${left === null ? "" : ` <small>${left} round${left === 1 ? "" : "s"} left</small>`} ${escapeHtml(CONDITION_EFFECTS[cond.name])}</li>`;
+        }).join("")}
       </ul>` : "";
     const exhaustionEffects = c.exhaustion ? `
       <ul class="effect-list effect-list--exh">
         ${R.exhaustionEffects(c.exhaustion).map((e, i) => `<li><b>Level ${i + 1}</b> ${escapeHtml(e)}${i === 3 ? " <small>(not applied automatically)</small>" : ""}</li>`).join("")}
       </ul>` : "";
-    const check = c.concentrationCheck;
+
     const recharges = c.recharges?.length ? c.recharges.map((r, i) => `
       <div class="recharge-item ${r.available ? "is-ready" : "is-spent"}">
         <span class="recharge-name">${escapeHtml(r.name)} <small>Recharge ${rechargeLabel(r.min)}</small></span>
@@ -1080,18 +1468,20 @@
         ${r.available ? "" : `<button class="btn btn-ghost btn-sm" type="button" data-action="roll-recharge" data-recharge-index="${i}">Roll d6</button>`}
       </div>`).join("") : `<p class="detail-empty">No recharge abilities. Add them with Edit Stat Block.</p>`;
 
-    // Skills, attacks and spell slots sit below the trackers, side by side when there's more than one.
+    const attacks = c.attacks?.length || c.multiattack ? `
+      <section class="detail-section">
+        <h3 class="detail-section-title">Attacks</h3>
+        ${c.multiattack ? `<p class="detail-text"><b>Multiattack.</b> ${escapeHtml(c.multiattack)}</p>` : ""}
+        <div class="card-attacks">${(c.attacks || []).map((a, i) => attackHtml(a, i)).join("")}</div>
+      </section>` : "";
+
+    // Attacks, stat block text and spell slots sit below the trackers, side by side when there's room.
     const extras = [
-      !isPc && c.skills?.length ? `
-        <section class="detail-section">
-          <h3 class="detail-section-title">Skills</h3>
-          <p class="detail-text">${escapeHtml(skillsText(c))}</p>
-        </section>` : "",
-      !isPc && c.attacks?.length ? `
-        <section class="detail-section">
-          <h3 class="detail-section-title">Attacks</h3>
-          <div class="card-attacks">${c.attacks.map(attackHtml).join("")}</div>
-        </section>` : "",
+      attacks,
+      textSection("Traits", c.traits),
+      textSection("Actions", c.actions),
+      textSection("Reactions", c.reactions),
+      textSection(`Legendary Actions${c.legendaryActions ? ` (${c.legendaryActions}/round)` : ""}`, c.legendaryText),
       spellBlockHtml(c),
     ].filter(Boolean);
 
@@ -1099,14 +1489,21 @@
       <div class="detail-summary">${summary}</div>
 
       <section class="detail-section">
-        <h3 class="detail-section-title">Ability Scores</h3>
+        <h3 class="detail-section-title">Ability Scores &amp; Saves</h3>
         <div class="detail-abilities">${abilities}</div>
+        <div class="detail-statlines">${statLines}</div>
       </section>
 
       <div class="detail-grid">
         <div class="detail-col">
           <section class="detail-section">
             <h3 class="detail-section-title">Conditions</h3>
+            <label class="duration-field">
+              <span>Ends after</span>
+              <input type="number" min="1" max="100" id="condition-rounds" value="${escapeHtml(conditionRounds)}" placeholder="∞" aria-describedby="condition-rounds-hint">
+              <span>rounds when switched on</span>
+            </label>
+            <p class="detail-hint" id="condition-rounds-hint">Leave blank for no duration. A condition expires when the round after its last round begins.</p>
             <div class="chip-grid">${conditions}</div>
             ${activeEffects}
             <div class="exhaustion">
@@ -1116,6 +1513,12 @@
               <button class="icon-btn" type="button" data-action="exhaustion" data-delta="1" aria-label="Increase exhaustion">+</button>
             </div>
             ${exhaustionEffects}
+          </section>
+
+          <section class="detail-section">
+            <h3 class="detail-section-title">Turn &amp; Actions</h3>
+            ${economyHtml(c, enc.round)}
+            ${legendaryHtml(c)}
           </section>
         </div>
 
@@ -1130,11 +1533,7 @@
               <input type="text" data-detail-field="concentrationSpell" value="${escapeHtml(c.concentration.spell)}"
                      placeholder="Spell name" autocomplete="off" aria-label="Concentration spell">
             </div>
-            ${check && c.concentration.active ? `
-              <div class="conc-check" role="status">
-                <span>Concentration save <b>DC ${check.dc}</b>${check.count > 1 ? ` <small>×${check.count} saves</small>` : ""}</span>
-                <button class="btn btn-ghost btn-sm" type="button" data-action="dismiss-conc-check">Dismiss</button>
-              </div>` : ""}
+            ${concCheckHtml(c, true)}
             <p class="detail-hint">DC is 10 or half the damage taken, whichever is higher. One save per damage source.</p>
           </section>
 
@@ -1149,76 +1548,133 @@
               <p class="detail-hint">Spent abilities roll automatically at the start of this creature's turn.</p>
               ${recharges}
             </section>`}
+
+          <section class="detail-section">
+            <label class="field field-wide">
+              <span class="detail-section-title">DM Notes</span>
+              <textarea data-detail-field="notes" rows="3" placeholder="Tactics, e.g. retreats at half HP">${escapeHtml(c.notes)}</textarea>
+            </label>
+          </section>
         </div>
       </div>
 
       ${extras.length ? `<div class="detail-extras">${extras.join("")}</div>` : ""}`;
   }
 
-  /* Detail interactions that change state (shared with cards where it makes sense). */
-  function applyCombatantAction(c, btn) {
+  /**
+   * State-changing actions shared by cards and the detail modal.
+   * Returns false (nothing changed), true (changed, not undoable) or an undo label.
+   */
+  function applyCombatantAction(c, btn, enc) {
+    const p = toInt(btn.dataset.pipIndex, 0);
+    const pipValue = (current, max) => clamp(p < current ? p : p + 1, 0, max);
     switch (btn.dataset.action) {
       case "toggle-pip": {
         const slot = c.spellSlots?.[toInt(btn.dataset.slotIndex, -1)];
         if (!slot) return false;
-        const p = toInt(btn.dataset.pipIndex, 0);
-        slot.current = clamp(p < slot.current ? p : p + 1, 0, slot.max);
-        return true;
+        slot.current = pipValue(slot.current, slot.max);
+        return `Spell slot (${c.name})`;
+      }
+      case "legendary-pip": {
+        if (btn.dataset.kind === "resistance") {
+          c.legendaryResistanceLeft = pipValue(c.legendaryResistanceLeft, c.legendaryResistance);
+          logEntry("info", `${c.name}: legendary resistance ${c.legendaryResistanceLeft}/${c.legendaryResistance}.`, enc);
+        } else {
+          c.legendaryActionsLeft = pipValue(c.legendaryActionsLeft, c.legendaryActions);
+          logEntry("info", `${c.name}: legendary actions ${c.legendaryActionsLeft}/${c.legendaryActions}.`, enc);
+        }
+        return `Legendary (${c.name})`;
       }
       case "death-save": {
         const kind = btn.dataset.kind === "fail" ? "fail" : "success";
         const i = toInt(btn.dataset.index, 0);
         c.deathSaves[kind] = i < c.deathSaves[kind] ? i : i + 1;
-        return true;
+        logEntry("death", `${c.name}: death saves ${c.deathSaves.success} ✓ / ${c.deathSaves.fail} ✗.`, enc);
+        return `Death save (${c.name})`;
       }
       case "reset-death-saves":
         c.deathSaves = { success: 0, fail: 0 };
-        return true;
+        return `Reset death saves (${c.name})`;
       case "toggle-recharge": {
         const r = c.recharges?.[toInt(btn.dataset.rechargeIndex, -1)];
         if (!r) return false;
         r.available = !r.available;
-        return true;
+        logEntry("recharge", `${c.name}: ${r.name} ${r.available ? "restored" : "used"}.`, enc);
+        return `${r.name} (${c.name})`;
       }
       case "roll-recharge": {
         const r = c.recharges?.[toInt(btn.dataset.rechargeIndex, -1)];
         if (!r || r.available) return false;
-        announce(R.rollRecharges({ name: c.name, recharges: [r] }));
-        return true;
+        announce(R.rollRecharges({ name: c.name, recharges: [r] }), { enc });
+        return `Recharge roll (${c.name})`;
       }
-      case "toggle-condition":
-        announce(R.toggleCondition(c, btn.dataset.condition));
-        return true;
+      case "toggle-condition": {
+        const res = R.toggleCondition(c, btn.dataset.condition, { rounds: conditionRounds, round: enc.round });
+        announce(res.events, { enc });
+        return res.blocked ? true : `${btn.dataset.condition} (${c.name})`;
+      }
       case "exhaustion": {
-        const before = c.exhaustion;
-        c.exhaustion = clamp(c.exhaustion + toInt(btn.dataset.delta, 0), 0, 6);
-        if (c.exhaustion === 6 && before < 6) toast(`${c.name} reaches exhaustion level 6 and dies.`);
-        return c.exhaustion !== before;
+        const res = R.changeExhaustion(c, toInt(btn.dataset.delta, 0));
+        announce(res.events, { enc });
+        return res.events.length && !res.blocked ? `Exhaustion (${c.name})` : res.blocked;
       }
       case "toggle-concentration":
         c.concentration.active = !c.concentration.active;
         if (!c.concentration.active) c.concentrationCheck = null;
-        return true;
+        logEntry("concentration", `${c.name} ${c.concentration.active ? "starts" : "stops"} concentrating${c.concentration.spell ? ` on ${c.concentration.spell}` : ""}.`, enc);
+        return `Concentration (${c.name})`;
       case "dismiss-conc-check":
         c.concentrationCheck = null;
         return true;
+      case "toggle-reaction":
+        c.reactionUsed = !c.reactionUsed;
+        return `Reaction (${c.name})`;
+      case "toggle-bonus":
+        c.bonusActionUsed = !c.bonusActionUsed;
+        return `Bonus action (${c.name})`;
+      case "toggle-ready":
+        c.readied = !c.readied;
+        logEntry("info", `${c.name} ${c.readied ? "readies an action" : "drops its readied action"}.`, enc);
+        return `Ready (${c.name})`;
+      case "toggle-surprised":
+        c.surprised = !c.surprised;
+        logEntry("info", `${c.name} is ${c.surprised ? "" : "no longer "}surprised.`, enc);
+        return `Surprised (${c.name})`;
+      case "roll-attack": {
+        const atk = c.attacks?.[toInt(btn.dataset.attackIndex, -1)];
+        if (!atk) return false;
+        rollAndLog(`${c.name} · ${atk.name} to hit`, `1d20${atk.toHit >= 0 ? "+" : ""}${atk.toHit}`, { mode: diceMode });
+        return true;
+      }
+      case "roll-damage": {
+        const atk = c.attacks?.[toInt(btn.dataset.attackIndex, -1)];
+        const expr = atk && R.attackDamageExpr(atk);
+        if (!expr) return false;
+        rollAndLog(`${c.name} · ${atk.name} damage`, expr, { suffix: atk.dmgType });
+        return true;
+      }
     }
     return false;
   }
 
+  function runCombatantAction(c, btn) {
+    const result = applyCombatantAction(c, btn, activeEncounter());
+    if (result) commit({ undo: typeof result === "string" ? result : null });
+  }
 
   $("#detail-body").addEventListener("click", (e) => {
     const btn = e.target.closest("[data-action]");
-    const c = activeEncounter()?.combatants.find((x) => x.instanceId === detailId);
+    const c = findCombatant(detailId);
     if (!btn || !c) return;
-    if (applyCombatantAction(c, btn)) commit();
+    runCombatantAction(c, btn);
   });
 
   /* Text fields save as you type but only repaint the cards behind the
      modal on change, so focus and clicks inside the modal aren't disturbed. */
   $("#detail-body").addEventListener("input", (e) => {
+    if (e.target.id === "condition-rounds") { conditionRounds = e.target.value; return; }
     const field = e.target.dataset.detailField;
-    const c = activeEncounter()?.combatants.find((x) => x.instanceId === detailId);
+    const c = findCombatant(detailId);
     if (!field || !c) return;
     if (field === "concentrationSpell") c.concentration.spell = e.target.value;
     if (field === "notes") c.notes = e.target.value;
@@ -1230,13 +1686,13 @@
   });
   $("#detail-body").addEventListener("change", (e) => {
     if (!e.target.dataset.detailField) return;
-    const c = activeEncounter()?.combatants.find((x) => x.instanceId === detailId);
+    const c = findCombatant(detailId);
     if (c?.type === "lair" && !c.name.trim()) { c.name = "Lair Action"; saveState(); }
     renderActiveEncounter();
   });
 
   $("#detail-edit").addEventListener("click", () => {
-    const c = activeEncounter()?.combatants.find((x) => x.instanceId === detailId);
+    const c = findCombatant(detailId);
     detailModal.close();
     if (c) openCreatureModal({ mode: "instance-edit", type: c.type, instanceId: c.instanceId });
   });
@@ -1287,7 +1743,7 @@
     const added = addCombatantsFromTemplate(enc, f.templateId.value, f.initiative.value, f.count.value);
     pickerModal.close("ok");
     if (added) toast(`${added === 1 ? "1 combatant" : `${added} combatants`} added.`);
-    commit();
+    commit({ undo: added ? `Add ${added === 1 ? "combatant" : `${added} combatants`}` : null });
   });
 
   $("#picker-create-new").addEventListener("click", () => {
@@ -1359,54 +1815,146 @@
   });
 
   /* ---------- Tracker controls ---------- */
-  $("#btn-next-turn").addEventListener("click", () => {
+  const withEncounter = (fn) => (...args) => {
     const enc = activeEncounter();
-    if (!enc) return;
+    if (enc) fn(enc, ...args);
+  };
+
+  $("#btn-next-turn").addEventListener("click", withEncounter((enc) => {
     nextTurn(enc);
-    commit();
-  });
-  $("#btn-prev-turn").addEventListener("click", () => {
-    const enc = activeEncounter();
-    if (!enc) return;
+    commit({ undo: "Next turn" });
+  }));
+  $("#btn-prev-turn").addEventListener("click", withEncounter((enc) => {
     prevTurn(enc);
-    commit();
-  });
+    commit({ undo: "Previous turn" });
+  }));
+  $("#btn-delay").addEventListener("click", withEncounter(async (enc) => {
+    const cur = enc.combatants[enc.currentTurnIndex];
+    const later = enc.combatants.slice(enc.currentTurnIndex + 1);
+    if (!cur || !later.length) return;
+    const targetId = await choiceDialog({
+      title: `Delay ${cur.name}`,
+      text: `${cur.name} will act right after the combatant you pick, and their initiative changes to match.`,
+      options: later.map((c) => ({ value: c.instanceId, label: c.name, hint: `Initiative ${c.initiative}` })),
+    });
+    if (!targetId) return;
+    const events = R.delayTurn(enc, targetId);
+    if (!events) return;
+    announce(events, { enc });
+    commit({ undo: `Delay ${cur.name}` });
+  }));
+
   $("#btn-add-pc").addEventListener("click", () => openPicker("pc"));
   $("#btn-add-enemy").addEventListener("click", () => openPicker("enemy"));
-  $("#btn-add-lair").addEventListener("click", () => {
-    const enc = activeEncounter();
-    if (!enc) return;
+  $("#btn-add-lair").addEventListener("click", withEncounter((enc) => {
     enc.combatants.push(makeLair());
     sortEncounter(enc);
     toast("Lair action added at initiative 20.");
-    commit();
+    commit({ undo: "Add lair action" });
+  }));
+
+  $("#btn-roll-init").addEventListener("click", withEncounter((enc) => {
+    const events = R.rollInitiative(enc, { group: state.ui.groupInitiative });
+    announce(events, { enc, quiet: true });
+    toast(`Rolled initiative for ${events.length} ${events.length === 1 ? "enemy group" : "enemy groups"}. Details in the log.`);
+    commit({ undo: "Roll initiative" });
+  }));
+  $("#opt-group-init").addEventListener("change", (e) => {
+    state.ui.groupInitiative = e.target.checked;
+    saveState();
   });
 
-  $("#btn-clock-toggle").addEventListener("click", () => {
-    const enc = activeEncounter();
-    if (!enc) return;
+  async function rest(enc, kind) {
+    const preview = R.applyRest(R.clone(enc), kind);
+    const label = kind === "long" ? "Long Rest" : "Short Rest";
+    const html = preview.length
+      ? `<p>This changes:</p><ul class="confirm-list">${preview.map((p) =>
+          `<li><strong>${escapeHtml(p.name)}</strong>: ${escapeHtml(p.changes.join("; "))}</li>`).join("")}</ul>
+         ${kind === "short" ? `<p class="detail-hint">Hit Dice healing isn't tracked; adjust HP by hand.</p>` : ""}`
+      : `<p>Nothing to restore.</p>`;
+    const ok = await confirmDialog({ title: label, html, okLabel: `Take ${label}`, danger: false });
+    if (!ok) return;
+    R.applyRest(enc, kind);
+    logEntry("info", `${label} taken.`, enc);
+    preview.forEach((p) => logEntry("info", `${p.name}: ${p.changes.join("; ")}`, enc));
+    toast(`${label} taken.`);
+    commit({ undo: label });
+  }
+  $("#btn-short-rest").addEventListener("click", withEncounter((enc) => rest(enc, "short")));
+  $("#btn-long-rest").addEventListener("click", withEncounter((enc) => rest(enc, "long")));
+
+  $("#btn-clock-toggle").addEventListener("click", withEncounter((enc) => {
     if (clockRunning(enc)) pauseClock(enc); else startClock(enc);
     saveState();
     renderClock();
-  });
-  $("#btn-clock-reset").addEventListener("click", () => {
-    const enc = activeEncounter();
-    if (!enc) return;
+  }));
+  $("#btn-clock-reset").addEventListener("click", withEncounter((enc) => {
     resetClock(enc);
     saveState();
     renderClock();
-  });
+  }));
   // Sub-second tick so the display never lags the true elapsed time by a full second.
   setInterval(renderClock, 250);
 
-  /* Keyboard: N / → next turn, P / ← previous turn, when nothing is focused */
+  /* ---------- Log & dice panels ---------- */
+  const toggleLog = () => { state.ui.logOpen = !state.ui.logOpen; commit(); };
+  const toggleDice = () => {
+    state.ui.diceOpen = !state.ui.diceOpen;
+    commit();
+    if (state.ui.diceOpen) requestAnimationFrame(() => $("#dice-expr").focus());
+  };
+  $("#btn-toggle-log").addEventListener("click", toggleLog);
+  $("#btn-log-close").addEventListener("click", toggleLog);
+  $("#btn-toggle-dice").addEventListener("click", toggleDice);
+  $("#btn-dice-close").addEventListener("click", toggleDice);
+  $("#btn-log-clear").addEventListener("click", withEncounter((enc) => {
+    if (!enc.log.length) return;
+    enc.log = [];
+    commit({ undo: "Clear log" });
+    toast("Combat log cleared.", { action: { label: "Undo", run: undo } });
+  }));
+
+  /** Rolls made from the panel are logged on the open encounter, if any. */
+  function panelRoll(expr) {
+    const mode = /^1?d20\b/i.test(expr.trim()) ? diceMode : "normal";
+    const r = rollAndLog("Roll", expr, { mode });
+    if (r && activeEncounter()) commit();
+  }
+  $("#dice-buttons").addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-roll]");
+    if (btn) panelRoll(`1${btn.dataset.roll}`);
+  });
+  $("#dice-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const expr = $("#dice-expr").value;
+    if (expr.trim()) panelRoll(expr);
+  });
+  $$('input[name="dice-mode"]').forEach((radio) =>
+    radio.addEventListener("change", () => { if (radio.checked) diceMode = radio.value; }));
+
+  /* ---------- Keyboard ---------- */
+  const isTyping = () => {
+    const el = document.activeElement;
+    return !!el && (el.tagName === "TEXTAREA" || el.tagName === "SELECT" ||
+      (el.tagName === "INPUT" && !["checkbox", "radio", "button"].includes(el.type)) || el.isContentEditable);
+  };
+
   document.addEventListener("keydown", (e) => {
-    if (state.ui.view !== "active") return;
     if (document.querySelector("dialog[open]")) return;
-    const tag = document.activeElement?.tagName;
-    if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
-    if (e.key === "n" || e.key === "ArrowRight") { e.preventDefault(); $("#btn-next-turn").click(); }
-    if (e.key === "p" || e.key === "ArrowLeft") { e.preventDefault(); $("#btn-prev-turn").click(); }
+    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "z") {
+      // A field with text undoes its own typing; an empty one hands Ctrl+Z to the app.
+      if (isTyping() && document.activeElement.value) return;
+      e.preventDefault();
+      undo();
+      return;
+    }
+    if (e.ctrlKey || e.metaKey || e.altKey || isTyping()) return;
+    const k = e.key.toLowerCase();
+    if (k === "d") { e.preventDefault(); toggleDice(); return; }
+    if (state.ui.view !== "active") return;
+    if (k === "l") { e.preventDefault(); toggleLog(); return; }
+    if (k === "n" || e.key === "ArrowRight") { e.preventDefault(); $("#btn-next-turn").click(); }
+    if (k === "p" || e.key === "ArrowLeft") { e.preventDefault(); $("#btn-prev-turn").click(); }
   });
 
   /* ---------- Combatant card actions ---------- */
@@ -1420,16 +1968,11 @@
     return { enc, combatant, el };
   }
 
-  cardsHost.addEventListener("click", async (e) => {
+  cardsHost.addEventListener("click", (e) => {
     const { enc, combatant, el } = combatantFromEvent(e);
     if (!combatant) return;
     const btn = e.target.closest("[data-action]");
-
-    // A click on the card itself (not a control) opens the detail modal.
-    if (!btn) {
-      if (!e.target.closest("input, button, label, select, textarea, a")) openDetail(combatant.instanceId);
-      return;
-    }
+    if (!btn) return;
 
     switch (btn.dataset.action) {
       case "damage":
@@ -1438,14 +1981,19 @@
         const input = $('[data-field="hpDelta"]', el);
         const amount = Math.abs(toInt(input.value, 0)) || 1;
         const action = btn.dataset.action;
+        let changed;
         if (action === "damage") {
-          damageCombatant(combatant, amount, { crit: !!$('[data-field="crit"]', el)?.checked });
+          damageCombatant(combatant, amount, {
+            crit: !!$('[data-field="crit"]', el)?.checked,
+            type: $('[data-field="dmgType"]', el)?.value || "",
+          });
+          changed = true;
         } else if (action === "heal") {
-          if (!healCombatant(combatant, amount)) return;
-        } else if (!grantTemp(combatant, amount)) {
-          return;
+          changed = healCombatant(combatant, amount);
+        } else {
+          changed = grantTemp(combatant, amount);
         }
-        commit();
+        if (changed) commit({ undo: `${capitalize(action)} ${combatant.name}` });
         break;
       }
 
@@ -1457,26 +2005,33 @@
         openCreatureModal({ mode: "instance-edit", type: combatant.type, instanceId: combatant.instanceId });
         break;
 
-      case "remove-instance": {
-        const ok = await confirmDialog({
-          title: "Remove Combatant",
-          html: `Remove <strong>${escapeHtml(combatant.name)}</strong> from this encounter? Their library entry, if any, stays put.`,
-          okLabel: "Remove",
-        });
-        if (!ok) return;
-        const removedIdx = enc.combatants.indexOf(combatant);
-        enc.combatants.splice(removedIdx, 1);
-        if (removedIdx < enc.currentTurnIndex) enc.currentTurnIndex -= 1;
-        else if (removedIdx === enc.currentTurnIndex && removedIdx >= enc.combatants.length) enc.currentTurnIndex = 0;
+      case "roll-init": {
+        const r = R.rollInitiativeFor(combatant);
         sortEncounter(enc);
-        commit();
+        logEntry("roll", `Initiative ${combatant.name}: d20 (${r.d20}) ${formatMod(r.bonus)} = ${r.total}`, enc);
+        toast(`${combatant.name} rolls ${r.total} for initiative.`);
+        commit({ undo: `Roll initiative (${combatant.name})` });
+        break;
+      }
+
+      case "remove-instance": {
+        removeCombatant(enc, combatant);
+        commit({ undo: `Remove ${combatant.name}` });
+        toast(`${combatant.name} removed.`, { action: { label: "Undo", run: undo } });
         break;
       }
 
       default:
-        if (applyCombatantAction(combatant, btn)) commit();
+        runCombatantAction(combatant, btn);
     }
   });
+
+  /* The collapsible stats section remembers when the DM overrides the default. */
+  cardsHost.addEventListener("toggle", (e) => {
+    if (!e.target.matches?.("[data-card-more]")) return;
+    const id = e.target.closest("[data-instance-id]")?.dataset.instanceId;
+    if (id) moreOpen.set(id, e.target.open);
+  }, true);
 
   /* Inline edits commit on change (blur / Enter) */
   cardsHost.addEventListener("change", (e) => {
@@ -1488,24 +2043,28 @@
     switch (input.dataset.field) {
       case "initiative":
         combatant.initiative = toInt(input.value, 0);
+        combatant.initRank = 0;
         sortEncounter(enc);
-        commit();
+        commit({ undo: `Initiative (${combatant.name})` });
         break;
       case "hpCurrent":
         // Direct edits are corrections, so they bypass massive damage and death save rules.
         combatant.hp.current = Math.min(Math.max(0, toInt(input.value, 0)), combatant.hp.max);
-        announce(R.afterHpChange(combatant));
-        commit();
+        announce(R.afterHpChange(combatant), { enc });
+        commit({ undo: `HP (${combatant.name})` });
         break;
       case "hpMax":
         combatant.hp.max = Math.max(0, toInt(input.value, 0));
         combatant.hp.current = Math.min(combatant.hp.current, combatant.hp.max);
-        announce(R.afterHpChange(combatant));
-        commit();
+        announce(R.afterHpChange(combatant), { enc });
+        commit({ undo: `Max HP (${combatant.name})` });
         break;
       case "hpTemp":
         combatant.hp.temp = Math.max(0, toInt(input.value, 0));
-        commit();
+        commit({ undo: `Temp HP (${combatant.name})` });
+        break;
+      case "dmgType":
+        lastDamageType.set(combatant.instanceId, input.value);
         break;
     }
   });
@@ -1552,24 +2111,44 @@
      7. Boot
      ====================================================================== */
 
-  /* Static option lists for the builder. */
+  /* Static parts of the builder. */
   creatureForm.elements.cls.innerHTML =
     `<option value="">—</option>` + CLASSES.map((c) => `<option value="${c}">${c}</option>`).join("");
   creatureForm.elements.cr.innerHTML =
     `<option value="">—</option>` + CR_OPTIONS.map((cr) => `<option value="${cr}">${cr}</option>`).join("");
   $("#damage-types").innerHTML = DAMAGE_TYPES.map((t) => `<option value="${t}">`).join("");
-  $("#skill-grid").innerHTML = SKILLS.map((s) => `
-    <label class="skill-check">
-      <input type="checkbox" data-skill="${s.key}">
-      <span class="skill-name">${s.name} <small>${s.ability.toUpperCase()}</small></span>
-      <span class="skill-bonus" data-skill-bonus="${s.key}">+0</span>
+  $("#stats-inputs").innerHTML = STAT_KEYS.map((k) => `
+    <label class="stat-input">
+      <span>${k.toUpperCase()}</span>
+      <input type="number" name="${k}" min="1" max="30" value="10" aria-label="${STAT_NAMES[k]}">
+      <span class="stat-input-mod" data-mod-for="${k}">+0</span>
     </label>`).join("");
+  $("#save-grid").innerHTML = STAT_KEYS.map((k) => `
+    <label class="skill-check">
+      <input type="checkbox" data-save="${k}">
+      <span class="skill-name">${STAT_NAMES[k]}</span>
+      <span class="skill-bonus" data-save-bonus="${k}">+0</span>
+    </label>`).join("");
+  $("#skill-grid").innerHTML = SKILLS.map((s) => `
+    <div class="skill-check">
+      <label class="skill-main">
+        <input type="checkbox" data-skill="${s.key}">
+        <span class="skill-name">${s.name} <small>${s.ability.toUpperCase()}</small></span>
+      </label>
+      <label class="skill-exp" title="Expertise: proficiency counts twice">
+        <input type="checkbox" data-expertise="${s.key}" aria-label="${s.name} expertise"><span aria-hidden="true">×2</span>
+      </label>
+      <span class="skill-bonus" data-skill-bonus="${s.key}">+0</span>
+    </div>`).join("");
+  $$("[data-def-grid]").forEach((grid) => {
+    const key = grid.dataset.defGrid;
+    const options = key === "conditionImmunities" ? [...CONDITIONS, "Exhaustion"] : DAMAGE_TYPES;
+    grid.innerHTML = options.map((o) => `
+      <label class="check-chip"><input type="checkbox" data-def="${key}" value="${o}"><span>${o}</span></label>`).join("");
+  });
 
   state = loadState();
-  if (state.ui.activeEncounterId && !findEncounter(state.ui.activeEncounterId)) {
-    state.ui.activeEncounterId = null;
-  }
   state.encounters.forEach(sortEncounter);
-  if (!["encounters", "active", "library"].includes(state.ui.view)) state.ui.view = "encounters";
+  snapshotActive();
   renderAll();
 })();

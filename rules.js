@@ -124,24 +124,89 @@
   /** Blank (null) means "use the DEX modifier", for PCs and enemies alike. */
   const initBonusOf = (c) => (c && c.type !== "lair" && Number.isFinite(c.initBonus) ? c.initBonus : modifier(c?.stats?.dex));
 
+  /** PHB p.15: +2 at levels 1–4, rising by 1 every four levels. */
+  const profFromLevel = (level) => 2 + Math.floor((clamp(toInt(level, 1), 1, 20) - 1) / 4);
+  const profOf = (c) => (c?.type === "pc" ? profFromLevel(c.level) : profFromCr(c?.cr));
+
+  /** Ability mod, plus proficiency if proficient, plus it again with expertise. */
   const skillBonus = (c, key) => {
     const skill = SKILL_BY_KEY[key];
-    return skill ? modifier(c.stats?.[skill.ability]) + profFromCr(c.cr) : 0;
+    if (!skill) return 0;
+    const prof = profOf(c);
+    const proficient = (c.skills || []).includes(key);
+    const expert = proficient && (c.expertise || []).includes(key);
+    return modifier(c.stats?.[skill.ability]) + (proficient ? prof : 0) + (expert ? prof : 0);
   };
+  const saveBonus = (c, ability) =>
+    modifier(c.stats?.[ability]) + ((c.saves || []).includes(ability) ? profOf(c) : 0);
+  /** PHB p.175: 10 + Wisdom (Perception) bonus. Advantage/disadvantage (±5) is not modelled. */
+  const passivePerception = (c) => 10 + skillBonus(c, "perception");
+  /** DC 8 + proficiency + ability modifier (MM p.11 "Saving Throws" for monster abilities). */
+  const autoSaveDc = (c, ability) => 8 + profOf(c) + modifier(c.stats?.[ability]);
+
+  /** DMG p.275 / MM p.9. CR 0 is 10 XP when it has effective attacks, else 0; we use 10. */
+  const XP_BY_CR = {
+    "0": 10, "1/8": 25, "1/4": 50, "1/2": 100,
+    1: 200, 2: 450, 3: 700, 4: 1100, 5: 1800, 6: 2300, 7: 2900, 8: 3900, 9: 5000, 10: 5900,
+    11: 7200, 12: 8400, 13: 10000, 14: 11500, 15: 13000, 16: 15000, 17: 18000, 18: 20000,
+    19: 22000, 20: 25000, 21: 33000, 22: 41000, 23: 50000, 24: 62000, 25: 75000, 26: 90000,
+    27: 105000, 28: 120000, 29: 135000, 30: 155000,
+  };
+  const xpForCr = (cr) => (isBlank(cr) ? 0 : XP_BY_CR[String(cr)] ?? 0);
+  /** Raw XP of the enemies, with no DMG group multiplier. */
+  const encounterXp = (enc) =>
+    enc.combatants.filter((c) => c.type === "enemy").reduce((sum, c) => sum + xpForCr(c.cr), 0);
 
   /* ---------- Normalisation (doubles as the migration layer) ---------- */
+
+  const pickList = (list, allowed) =>
+    [...new Set((Array.isArray(list) ? list : []).filter((x) => allowed.includes(x)))];
+  const text = (v) => String(v ?? "");
 
   function normalizeAttack(a = {}) {
     return {
       name: String(a.name ?? "").trim() || "Attack",
+      kind: a.kind === "save" ? "save" : "attack",
       ability: STAT_KEYS.includes(a.ability) ? a.ability : "str",
       toHit: toInt(a.toHit, 0),
+      saveDc: Math.max(0, toInt(a.saveDc, 10)),
+      saveAbility: STAT_KEYS.includes(a.saveAbility) ? a.saveAbility : "dex",
+      halfOnSave: !!a.halfOnSave,
       dmgDice: String(a.dmgDice ?? "").trim(),
       dmgBonus: toInt(a.dmgBonus, 0),
       dmgType: String(a.dmgType ?? "").trim(),
+      note: String(a.note ?? "").trim(),
       autoToHit: a.autoToHit !== false,
       autoDmg: a.autoDmg !== false,
+      autoSaveDc: a.autoSaveDc !== false,
     };
+  }
+
+  /** v1 stored conditions as names; v2 stores { name, endsOnRound } (null = indefinite). */
+  function normalizeConditions(list) {
+    const byName = new Map();
+    (Array.isArray(list) ? list : []).forEach((x) => {
+      const name = typeof x === "string" ? x : x?.name;
+      if (!CONDITIONS.includes(name)) return;
+      const ends = typeof x === "object" && !isBlank(x.endsOnRound) ? toInt(x.endsOnRound, null) : null;
+      byName.set(name, { name, endsOnRound: ends });
+    });
+    return CONDITIONS.filter((n) => byName.has(n)).map((n) => byName.get(n));
+  }
+
+  const LOG_CAP = 300;
+  const LOG_KINDS = ["damage", "heal", "condition", "turn", "roll", "recharge", "death", "concentration", "info"];
+  function normalizeLog(list) {
+    return (Array.isArray(list) ? list : [])
+      .filter((e) => e && typeof e === "object" && !isBlank(e.text))
+      .slice(-LOG_CAP)
+      .map((e) => ({
+        id: e.id || uuid(),
+        at: Number.isFinite(e.at) ? e.at : 0,
+        round: Math.max(1, toInt(e.round, 1)),
+        kind: LOG_KINDS.includes(e.kind) ? e.kind : "info",
+        text: String(e.text),
+      }));
   }
 
   function normalizeSpellSlot(s = {}) {
@@ -161,6 +226,7 @@
   function normalizeTemplate(t = {}, type) {
     const stats = {};
     STAT_KEYS.forEach((k) => { stats[k] = clamp(toInt(t.stats?.[k], 10), 1, 30); });
+    const skills = pickList(t.skills, SKILLS.map((s) => s.key));
     const block = {
       ...t,
       name: String(t.name ?? "").trim() || "Unnamed",
@@ -169,7 +235,18 @@
       speed: String(t.speed ?? "").trim(),
       stats,
       initBonus: isBlank(t.initBonus) ? null : toInt(t.initBonus, null),
+      saves: pickList(t.saves, STAT_KEYS),
+      skills,
+      expertise: pickList(t.expertise, skills),
+      senses: text(t.senses).trim(),
+      languages: text(t.languages).trim(),
+      damageResistances: pickList(t.damageResistances, DAMAGE_TYPES),
+      damageImmunities: pickList(t.damageImmunities, DAMAGE_TYPES),
+      damageVulnerabilities: pickList(t.damageVulnerabilities, DAMAGE_TYPES),
+      damageNotes: text(t.damageNotes).trim(),
+      conditionImmunities: pickList(t.conditionImmunities, [...CONDITIONS, "Exhaustion"]),
       spellSlots: (Array.isArray(t.spellSlots) ? t.spellSlots : [])
+        .filter((s) => s && typeof s === "object")
         .map(normalizeSpellSlot)
         .sort((a, b) => a.level - b.level),
     };
@@ -179,14 +256,37 @@
       block.race = String(t.race ?? "").trim();
     } else {
       block.cr = CR_OPTIONS.includes(String(t.cr)) ? String(t.cr) : "";
-      block.skills = (Array.isArray(t.skills) ? t.skills : []).filter((k) => SKILL_BY_KEY[k]);
-      block.attacks = (Array.isArray(t.attacks) ? t.attacks : []).map(normalizeAttack);
-      block.recharges = (Array.isArray(t.recharges) ? t.recharges : []).map((r) => ({
+      block.creatureType = text(t.creatureType).trim();
+      block.alignment = text(t.alignment).trim();
+      block.attacks = (Array.isArray(t.attacks) ? t.attacks : []).filter((a) => a && typeof a === "object").map(normalizeAttack);
+      block.recharges = (Array.isArray(t.recharges) ? t.recharges : []).filter((r) => r && typeof r === "object").map((r) => ({
         name: String(r.name ?? "").trim() || "Ability",
         min: clamp(toInt(r.min, 5), 2, 6),
       }));
+      block.legendaryActions = clamp(toInt(t.legendaryActions, 0), 0, 9);
+      block.legendaryResistance = clamp(toInt(t.legendaryResistance, 0), 0, 9);
+      block.multiattack = text(t.multiattack).trim();
+      block.traits = text(t.traits);
+      block.actions = text(t.actions);
+      block.reactions = text(t.reactions);
+      block.legendaryText = text(t.legendaryText);
     }
     return block;
+  }
+
+  /** Fields that exist only on combatants, never on library templates. */
+  const INSTANCE_ONLY = [
+    "instanceId", "templateId", "initiative", "initRank", "conditions", "autoUnconscious", "exhaustion",
+    "concentration", "concentrationCheck", "deathSaves", "legendaryActionsLeft", "legendaryResistanceLeft",
+    "reactionUsed", "bonusActionUsed", "readied", "surprised", "notes",
+  ];
+  /** Strip encounter-only state so a combatant can be saved back as a template. */
+  function templateFromInstance(c) {
+    const t = clone(c);
+    INSTANCE_ONLY.forEach((k) => delete t[k]);
+    t.hp = { max: c.hp.max };
+    (t.recharges || []).forEach((r) => { delete r.available; delete r.lastRoll; });
+    return normalizeTemplate(t, c.type);
   }
 
   /** A combatant: a normalised stat block plus encounter-only state. */
@@ -198,6 +298,7 @@
         type: "lair",
         name: String(c.name ?? "").trim() || "Lair Action",
         initiative: toInt(c.initiative, LAIR_INITIATIVE),
+        initRank: Number.isFinite(c.initRank) ? c.initRank : 0,
         notes: String(c.notes ?? ""),
       };
     }
@@ -206,12 +307,15 @@
     delete base.id;
     const max = base.hp.max;
     const check = c.concentrationCheck;
+    const la = base.legendaryActions || 0;
+    const lr = base.legendaryResistance || 0;
     return {
       ...base,
       instanceId: c.instanceId || uuid(),
       templateId: c.templateId ?? null,
       type,
       initiative: toInt(c.initiative, 0),
+      initRank: Number.isFinite(c.initRank) ? c.initRank : 0,
       hp: {
         max,
         current: Math.max(0, toInt(c.hp?.current, max)),
@@ -222,7 +326,7 @@
         available: c.recharges?.[i]?.available !== false,
         lastRoll: toInt(c.recharges?.[i]?.lastRoll, 0) || null,
       })),
-      conditions: (Array.isArray(c.conditions) ? c.conditions : []).filter((x) => CONDITIONS.includes(x)),
+      conditions: normalizeConditions(c.conditions),
       autoUnconscious: !!c.autoUnconscious,
       exhaustion: clamp(toInt(c.exhaustion, 0), 0, 6),
       concentration: { active: !!c.concentration?.active, spell: String(c.concentration?.spell ?? "") },
@@ -233,6 +337,13 @@
         success: clamp(toInt(c.deathSaves?.success, 0), 0, 3),
         fail: clamp(toInt(c.deathSaves?.fail, 0), 0, 3),
       },
+      legendaryActionsLeft: clamp(toInt(c.legendaryActionsLeft, la), 0, la),
+      legendaryResistanceLeft: clamp(toInt(c.legendaryResistanceLeft, lr), 0, lr),
+      reactionUsed: !!c.reactionUsed,
+      bonusActionUsed: !!c.bonusActionUsed,
+      readied: !!c.readied,
+      surprised: !!c.surprised,
+      notes: text(c.notes),
     };
   }
 
@@ -250,19 +361,31 @@
         elapsedMs: Math.max(0, Number(enc.clock?.elapsedMs) || 0),
         startedAt: Number.isFinite(enc.clock?.startedAt) ? enc.clock.startedAt : null,
       },
+      log: normalizeLog(enc.log),
     };
   }
 
   const VIEWS = ["encounters", "active", "library"];
+  const LIBRARY_SORTS = ["name", "cr", "level", "hp"];
 
   function normalizeUi(ui = {}) {
+    const crOrBlank = (v) => (CR_OPTIONS.includes(String(v)) ? String(v) : "");
     return {
       ...ui,
       view: VIEWS.includes(ui.view) ? ui.view : "encounters",
       activeEncounterId: typeof ui.activeEncounterId === "string" ? ui.activeEncounterId : null,
+      cardMode: ui.cardMode === "compact" ? "compact" : "full",
+      arrowKeys: !!ui.arrowKeys,
+      logOpen: !!ui.logOpen,
+      diceOpen: !!ui.diceOpen,
+      groupInitiative: ui.groupInitiative !== false,
+      librarySearch: text(ui.librarySearch),
+      libraryClass: CLASSES.includes(ui.libraryClass) ? ui.libraryClass : "",
+      libraryCrMin: crOrBlank(ui.libraryCrMin),
+      libraryCrMax: crOrBlank(ui.libraryCrMax),
+      librarySort: LIBRARY_SORTS.includes(ui.librarySort) ? ui.librarySort : "name",
     };
   }
-
   const defaultState = () => ({
     creatureLibrary: { pcs: [], enemies: [] },
     encounters: [],
@@ -337,8 +460,9 @@
   /* ---------- Turn order ---------- */
 
   /**
-   * Sort by initiative desc. Ties: lair actions lose (MM p.11), then higher
-   * initiative bonus, then higher DEX score, then stable insertion order.
+   * Sort by initiative desc. Ties: lair actions lose (MM p.11), then a Delay
+   * rank if one was set, then higher initiative bonus, then higher DEX score,
+   * then stable insertion order.
    * Keeps currentTurnIndex pointing at the same combatant it did before the sort.
    */
   function sortEncounter(enc) {
@@ -350,6 +474,7 @@
     enc.combatants.sort((a, b) =>
       (b.initiative - a.initiative) ||
       (isLair(a) - isLair(b)) ||
+      ((b.initRank || 0) - (a.initRank || 0)) ||
       (initBonusOf(b) - initBonusOf(a)) ||
       (toInt(b.stats?.dex, 10) - toInt(a.stats?.dex, 10)));
     if (currentId) {
@@ -373,35 +498,136 @@
     return events;
   }
 
+  /**
+   * Start of a creature's own turn: its reaction returns (PHB p.190), a
+   * readied action lapses (PHB p.193), legendary actions refill (MM p.11),
+   * and spent recharge abilities roll.
+   */
+  function startTurn(c, rng = Math.random) {
+    if (!c || c.type === "lair") return [];
+    c.reactionUsed = false;
+    c.bonusActionUsed = false;
+    c.readied = false;
+    c.legendaryActionsLeft = c.legendaryActions || 0;
+    return rollRecharges(c, rng);
+  }
+
+  /** Remove conditions whose last round has passed. */
+  function expireConditions(enc) {
+    const events = [];
+    enc.combatants.forEach((c) => {
+      if (c.type === "lair") return;
+      const expired = c.conditions.filter((x) => x.endsOnRound !== null && enc.round > x.endsOnRound);
+      expired.forEach((x) => events.push(...removeCondition(c, x.name, { reason: "ends" })));
+    });
+    return events;
+  }
+
+  const turnText = (enc) => {
+    const c = enc.combatants[enc.currentTurnIndex];
+    return c ? `Round ${enc.round}, ${c.name}'s turn` : `Round ${enc.round}`;
+  };
+
   /** Returns { events, newRound }. */
   function nextTurn(enc, rng = Math.random) {
     const events = [];
     if (!enc.combatants.length) return { events, newRound: false };
+    // Surprise lasts until the end of the creature's first turn (PHB p.189).
+    const ending = enc.combatants[enc.currentTurnIndex];
+    if (ending?.surprised && enc.round === 1) ending.surprised = false;
     enc.currentTurnIndex += 1;
     let newRound = false;
     if (enc.currentTurnIndex >= enc.combatants.length) {
       enc.currentTurnIndex = 0;
       enc.round += 1;
       newRound = true;
+      enc.combatants.forEach((c) => { if (c.type !== "lair") c.surprised = false; });
+      events.push(...expireConditions(enc));
     }
-    events.push(...rollRecharges(enc.combatants[enc.currentTurnIndex], rng));
+    events.unshift({ kind: "turn", text: turnText(enc) });
+    events.push(...startTurn(enc.combatants[enc.currentTurnIndex], rng));
     return { events, newRound };
   }
 
+  /** Steps the pointer back only. Undo is the way to reverse turn effects. */
   function prevTurn(enc) {
-    if (!enc.combatants.length) return { newRound: false };
+    if (!enc.combatants.length) return { newRound: false, events: [] };
     enc.currentTurnIndex -= 1;
     let newRound = false;
     if (enc.currentTurnIndex < 0) {
       enc.currentTurnIndex = enc.combatants.length - 1;
       if (enc.round > 1) { enc.round -= 1; newRound = true; }
     }
-    return { newRound };
+    return { newRound, events: [{ kind: "turn", text: `Back to ${turnText(enc)}` }] };
+  }
+
+  /**
+   * Delay (a DM convenience; the 2014 core rules only have Ready): move the
+   * current combatant to act right after a combatant later in this round.
+   * Their initiative becomes the target's, ordered just below it.
+   */
+  function delayTurn(enc, targetId, rng = Math.random) {
+    const idx = enc.currentTurnIndex;
+    const cur = enc.combatants[idx];
+    const tIdx = enc.combatants.findIndex((c) => c.instanceId === targetId);
+    if (!cur || tIdx <= idx) return null;
+    const target = enc.combatants[tIdx];
+    const nextId = enc.combatants[idx + 1].instanceId;
+    const group = enc.combatants.filter((c) => c !== cur && c.initiative === target.initiative);
+    group.forEach((c, i) => { c.initRank = group.length - i; });
+    cur.initiative = target.initiative;
+    cur.initRank = target.initRank - 0.5;
+    sortEncounter(enc);
+    enc.currentTurnIndex = enc.combatants.findIndex((c) => c.instanceId === nextId);
+    return [
+      { kind: "turn", text: `${cur.name} delays until after ${target.name}.` },
+      { kind: "turn", text: turnText(enc) },
+      ...startTurn(enc.combatants[enc.currentTurnIndex], rng),
+    ];
+  }
+
+  /* ---------- Initiative rolls ---------- */
+
+  const groupKey = (c) => c.templateId || c.name.replace(/\s+\d+$/, "");
+
+  function rollInitiativeFor(c, rng = Math.random) {
+    const d20 = rollDie(20, rng);
+    const bonus = initBonusOf(c);
+    c.initiative = d20 + bonus;
+    c.initRank = 0;
+    return { d20, bonus, total: c.initiative };
+  }
+
+  /**
+   * Roll for every enemy, leaving PCs (players roll their own) and lair
+   * actions alone. Grouped: one roll per group of identical creatures (PHB p.189).
+   */
+  function rollInitiative(enc, { group = true, rng = Math.random } = {}) {
+    const enemies = enc.combatants.filter((c) => c.type === "enemy");
+    const groups = new Map();
+    enemies.forEach((c) => {
+      const k = group ? groupKey(c) : c.instanceId;
+      if (!groups.has(k)) groups.set(k, []);
+      groups.get(k).push(c);
+    });
+    const events = [];
+    groups.forEach((members) => {
+      const r = rollInitiativeFor(members[0], rng);
+      members.slice(1).forEach((m) => { m.initiative = r.total; m.initRank = 0; });
+      const who = members.length > 1 ? `${members[0].name.replace(/\s+\d+$/, "")} ×${members.length}` : members[0].name;
+      events.push({ kind: "roll", text: `Initiative ${who}: d20 (${r.d20}) ${formatMod(r.bonus)} = ${r.total}` });
+    });
+    sortEncounter(enc);
+    return events;
   }
 
   /* ---------- Conditions ---------- */
 
-  const hasCondition = (c, name) => (c.conditions || []).includes(name);
+  const hasCondition = (c, name) => (c.conditions || []).some((x) => x.name === name);
+  const conditionNames = (c) => (c.conditions || []).map((x) => x.name);
+  const isImmuneTo = (c, name) => (c.conditionImmunities || []).includes(name);
+  /** Rounds left including the current one, or null when indefinite. */
+  const roundsLeft = (cond, round) => (cond.endsOnRound === null ? null : cond.endsOnRound - round + 1);
 
   /** Concentration ends when the creature is incapacitated (PHB p.203). */
   function endConcentration(c, reason) {
@@ -411,25 +637,51 @@
     return [{ kind: "concentration", text: `${c.name} ${reason} and loses concentration.` }];
   }
 
-  function addCondition(c, name) {
-    if (!CONDITIONS.includes(name) || hasCondition(c, name)) return [];
-    c.conditions = CONDITIONS.filter((x) => x === name || c.conditions.includes(x));
-    const events = [{ kind: "condition", text: `${c.name} is ${name.toLowerCase()}.` }];
+  /**
+   * Returns { blocked, events }. A duration of N rounds lasts through round
+   * (current + N − 1) and expires when the next round begins after that.
+   */
+  function addCondition(c, name, { rounds = null, round = 1 } = {}) {
+    if (!CONDITIONS.includes(name) || hasCondition(c, name)) return { blocked: false, events: [] };
+    if (isImmuneTo(c, name)) {
+      return { blocked: true, events: [{ kind: "condition", text: `${c.name} is immune to ${name.toLowerCase()}.` }] };
+    }
+    const n = toInt(rounds, 0);
+    const endsOnRound = n > 0 ? round + n - 1 : null;
+    c.conditions = normalizeConditions([...c.conditions, { name, endsOnRound }]);
+    const events = [{ kind: "condition", text: `${c.name} is ${name.toLowerCase()}${n > 0 ? ` for ${n} round${n === 1 ? "" : "s"}` : ""}.` }];
     if (INCAPACITATING.includes(name)) events.push(...endConcentration(c, `is ${name.toLowerCase()}`));
-    return events;
+    return { blocked: false, events };
   }
 
-  function removeCondition(c, name) {
+  function removeCondition(c, name, { reason = "" } = {}) {
     if (!hasCondition(c, name)) return [];
-    c.conditions = c.conditions.filter((x) => x !== name);
+    c.conditions = c.conditions.filter((x) => x.name !== name);
     if (name === "Unconscious") c.autoUnconscious = false;
-    return [{ kind: "condition", text: `${c.name} is no longer ${name.toLowerCase()}.` }];
+    return [{ kind: "condition", text: reason === "ends" ? `${c.name}: ${name} ends.` : `${c.name} is no longer ${name.toLowerCase()}.` }];
   }
 
-  const toggleCondition = (c, name) => (hasCondition(c, name) ? removeCondition(c, name) : addCondition(c, name));
+  function toggleCondition(c, name, opts) {
+    if (hasCondition(c, name)) return { blocked: false, events: removeCondition(c, name) };
+    return addCondition(c, name, opts);
+  }
 
   /** Cumulative list of exhaustion effects at the given level. */
   const exhaustionEffects = (level) => EXHAUSTION_EFFECTS.slice(1, clamp(toInt(level, 0), 0, 6) + 1);
+
+  /** Returns { blocked, events }. Long rest and DM edits go through here too. */
+  function changeExhaustion(c, delta) {
+    const before = c.exhaustion;
+    if (delta > 0 && isImmuneTo(c, "Exhaustion")) {
+      return { blocked: true, events: [{ kind: "condition", text: `${c.name} is immune to exhaustion.` }] };
+    }
+    c.exhaustion = clamp(before + toInt(delta, 0), 0, 6);
+    const events = [];
+    if (c.exhaustion !== before) {
+      events.push({ kind: "condition", text: `${c.name}: exhaustion ${before} → ${c.exhaustion}${c.exhaustion === 6 ? ". Dead." : ""}` });
+    }
+    return { blocked: false, events };
+  }
 
   /* ---------- Hit points ---------- */
 
@@ -506,15 +758,16 @@
       if (c.autoUnconscious) {
         c.autoUnconscious = false;
         if (hasCondition(c, "Unconscious")) {
-          c.conditions = c.conditions.filter((x) => x !== "Unconscious");
+          c.conditions = c.conditions.filter((x) => x.name !== "Unconscious");
           events.push({ kind: "condition", text: `${c.name} regains consciousness.` });
         }
       }
       return events;
     }
     events.push(...endConcentration(c, "drops to 0 HP"));
+    // Falling unconscious at 0 HP is part of the dying rules, so it ignores condition immunity.
     if (c.type === "pc" && !hasCondition(c, "Unconscious")) {
-      c.conditions = CONDITIONS.filter((x) => x === "Unconscious" || c.conditions.includes(x));
+      c.conditions = normalizeConditions([...c.conditions, { name: "Unconscious", endsOnRound: null }]);
       c.autoUnconscious = true;
       events.push({ kind: "condition", text: `${c.name} falls unconscious.` });
     }
@@ -531,11 +784,34 @@
   }
 
   /**
-   * Damage the way the DM enters it: HP rules, then dying, then concentration.
-   * Returns { result, events }.
+   * PHB p.197: immunity → 0; resistance halves (round down); vulnerability
+   * doubles. Resistance applies before vulnerability, and several instances
+   * of the same one count once. Returns { amount, defense, note }.
    */
-  function applyDamage(c, amount, { crit = false } = {}) {
-    const dmg = Math.max(0, toInt(amount, 0));
+  function damageAfterDefenses(amount, type, c) {
+    const raw = Math.max(0, toInt(amount, 0));
+    if (!type || !DAMAGE_TYPES.includes(type)) return { amount: raw, defense: null, note: "" };
+    if ((c.damageImmunities || []).includes(type)) {
+      return { amount: 0, defense: "immune", note: `${raw} ${type}, immune: 0` };
+    }
+    const resistant = (c.damageResistances || []).includes(type);
+    const vulnerable = (c.damageVulnerabilities || []).includes(type);
+    let out = raw;
+    if (resistant) out = Math.floor(out / 2);
+    if (vulnerable) out *= 2;
+    const defense = resistant && vulnerable ? "resistant and vulnerable" : resistant ? "resistant" : vulnerable ? "vulnerable" : null;
+    return { amount: out, defense, note: defense ? `${raw} ${type}, ${defense}: ${out}` : `${raw} ${type}` };
+  }
+
+  /**
+   * Damage the way the DM enters it (PHB order): type modifiers, then temp
+   * HP, then HP, then the dying rules, then concentration.
+   * Returns { raw, amount, note, result, events }.
+   */
+  function applyDamage(c, amount, { crit = false, type = "" } = {}) {
+    const raw = Math.max(0, toInt(amount, 0));
+    const def = damageAfterDefenses(raw, type, c);
+    const dmg = def.amount;
     const wasConcentrating = !!c.concentration?.active;
     const result = adjustHp(c, -dmg, { crit });
     const events = [];
@@ -554,12 +830,146 @@
       c.concentrationCheck = { dc, count: (c.concentrationCheck?.count || 0) + 1 };
       events.push({ kind: "concentration", text: `${c.name}: concentration save, DC ${dc}.` });
     }
-    return { result, events };
+    return { raw, amount: dmg, note: def.note, defense: def.defense, result, events };
   }
 
   function applyHealing(c, amount) {
     const result = adjustHp(c, Math.max(0, toInt(amount, 0)));
     return { result, events: afterHpChange(c) };
+  }
+
+  /* ---------- Rests ---------- */
+
+  /**
+   * Mutates the encounter and returns [{ name, changes: [text] }] for every
+   * combatant that changed. Run it on a clone to preview.
+   * Long rest (PHB p.186): needs at least 1 HP at the start; restores HP and
+   * spell slots, ends temp HP (PHB p.198), reduces exhaustion by 1 (PHB p.291).
+   * Legendary resistance is per day. Recharge abilities and death saves are
+   * reset as a DM convenience.
+   * Short rest: Warlock-style slots and recharge abilities only. Hit Dice
+   * spending is not tracked.
+   */
+  function applyRest(enc, kind) {
+    const out = [];
+    enc.combatants.forEach((c) => {
+      if (c.type === "lair") return;
+      const changes = [];
+      const spentRecharges = c.recharges.filter((r) => !r.available);
+      if (kind === "long") {
+        if (c.hp.current <= 0) {
+          out.push({ name: c.name, changes: ["no benefit: a long rest needs at least 1 HP"] });
+          return;
+        }
+        if (c.hp.current < c.hp.max) changes.push(`HP ${c.hp.current} → ${c.hp.max}`);
+        if (c.hp.temp) changes.push(`temp HP ${c.hp.temp} → 0`);
+        c.hp.current = c.hp.max;
+        c.hp.temp = 0;
+        const slots = c.spellSlots.filter((s) => s.current < s.max);
+        if (slots.length) changes.push(`spell slots restored (${slots.map((s) => `${s.level}`).join(", ")})`);
+        c.spellSlots.forEach((s) => { s.current = s.max; });
+        if (c.deathSaves.success || c.deathSaves.fail) changes.push("death saves reset");
+        c.deathSaves = { success: 0, fail: 0 };
+        if (c.legendaryResistanceLeft < (c.legendaryResistance || 0)) changes.push("legendary resistance restored");
+        c.legendaryResistanceLeft = c.legendaryResistance || 0;
+        if (c.exhaustion > 0) {
+          changes.push(`exhaustion ${c.exhaustion} → ${c.exhaustion - 1}`);
+          c.exhaustion -= 1;
+        }
+      } else {
+        const slots = c.spellSlots.filter((s) => s.recovery === "short" && s.current < s.max);
+        if (slots.length) changes.push(`short-rest slots restored (${slots.map((s) => `${s.level}`).join(", ")})`);
+        slots.forEach((s) => { s.current = s.max; });
+      }
+      if (spentRecharges.length) changes.push(`recharged: ${spentRecharges.map((r) => r.name).join(", ")}`);
+      c.recharges.forEach((r) => { r.available = true; });
+      c.legendaryActionsLeft = c.legendaryActions || 0;
+      c.reactionUsed = false;
+      c.bonusActionUsed = false;
+      c.concentrationCheck = null;
+      if (changes.length) out.push({ name: c.name, changes });
+    });
+    return out;
+  }
+
+  /* ---------- Dice ---------- */
+
+  /**
+   * A tiny safe parser for "2d6+3", "d20-1", "1d8 + 1d6 + 2", "d%". No eval.
+   * Returns [{ sign, count, sides }] with sides 0 for a flat number, or throws.
+   */
+  function parseDice(expr) {
+    const s = String(expr ?? "").toLowerCase().trim().replace(/\s*([+-])\s*/g, "$1").replace(/d%/g, "d100");
+    if (!s || s.length > 80) throw new Error("Enter a roll like 2d6+3.");
+    if (/\s/.test(s)) throw new Error(`Can't read "${expr}".`);
+    const terms = [];
+    const re = /([+-]?)(\d*)d(\d+)|([+-]?)(\d+)/y;
+    let pos = 0;
+    while (pos < s.length) {
+      re.lastIndex = pos;
+      const m = re.exec(s);
+      if (!m || (pos > 0 && !m[1] && !m[4])) throw new Error(`Can't read "${expr}".`);
+      if (m[3] !== undefined) {
+        const count = m[2] === "" ? 1 : toInt(m[2], 0);
+        const sides = toInt(m[3], 0);
+        if (count < 1 || count > 100 || sides < 1 || sides > 1000) throw new Error("Dice must be 1–100 dice of 1–1000 sides.");
+        terms.push({ sign: m[1] === "-" ? -1 : 1, count, sides });
+      } else {
+        const n = toInt(m[5], 0);
+        if (n > 100000) throw new Error("That number is too large.");
+        terms.push({ sign: m[4] === "-" ? -1 : 1, count: n, sides: 0 });
+      }
+      pos = re.lastIndex;
+    }
+    return terms;
+  }
+
+  /**
+   * mode "adv" / "dis" applies only when the roll has a single d20 (PHB p.173).
+   * Returns { expr, total, text, natural } (natural = the kept d20, if any).
+   */
+  function rollDice(expr, { mode = "normal", rng = Math.random } = {}) {
+    const terms = parseDice(expr);
+    const d20Terms = terms.filter((t) => t.sides === 20);
+    const advApplies = mode !== "normal" && d20Terms.length === 1 && d20Terms[0].count === 1;
+    let total = 0;
+    let natural = null;
+    const parts = terms.map((t, i) => {
+      const sign = t.sign < 0 ? "−" : i ? "+" : "";
+      if (!t.sides) { total += t.sign * t.count; return `${sign}${i ? " " : ""}${t.count}`; }
+      let rolls = Array.from({ length: t.count }, () => rollDie(t.sides, rng));
+      let label = `${t.count}d${t.sides}`;
+      if (t.sides === 20 && advApplies) {
+        const pair = [rolls[0], rollDie(20, rng)];
+        const kept = mode === "adv" ? Math.max(...pair) : Math.min(...pair);
+        label += mode === "adv" ? " (adv)" : " (dis)";
+        rolls = [kept];
+        natural = kept;
+        total += t.sign * kept;
+        return `${sign}${i ? " " : ""}${label} [${pair.join(", ")} → ${kept}]`;
+      }
+      if (t.sides === 20 && t.count === 1) natural = rolls[0];
+      const sum = rolls.reduce((a, b) => a + b, 0);
+      total += t.sign * sum;
+      return `${sign}${i ? " " : ""}${label} [${rolls.join(", ")}]`;
+    });
+    const ignored = mode !== "normal" && !advApplies ? " (advantage needs a single d20)" : "";
+    return { expr: String(expr).trim(), total, natural, text: `${parts.join(" ")} = ${total}${ignored}` };
+  }
+
+  /** "1d6+2" from an attack's dice and bonus, or "" when it has neither. */
+  function attackDamageExpr(atk) {
+    const bonus = toInt(atk.dmgBonus, 0);
+    if (!atk.dmgDice) return bonus ? String(bonus) : "";
+    return `${atk.dmgDice}${bonus > 0 ? `+${bonus}` : bonus < 0 ? `${bonus}` : ""}`;
+  }
+
+  /* ---------- Combat log ---------- */
+
+  function pushLog(enc, kind, text, at = Date.now()) {
+    if (!enc.log) enc.log = [];
+    enc.log.push({ id: uuid(), at, round: enc.round, kind: LOG_KINDS.includes(kind) ? kind : "info", text: String(text) });
+    if (enc.log.length > LOG_CAP) enc.log.splice(0, enc.log.length - LOG_CAP);
   }
 
   /* ---------- Difficulty ---------- */
@@ -594,15 +1004,20 @@
 
   return {
     STAT_KEYS, STAT_NAMES, SKILLS, SKILL_BY_KEY, CONDITIONS, CONDITION_EFFECTS, EXHAUSTION_EFFECTS,
-    INCAPACITATING, CLASSES, CR_OPTIONS, DAMAGE_TYPES, LAIR_INITIATIVE,
-    uuid, toInt, clamp, clone, isBlank, modifier, formatMod, formatNum, parseCr, profFromCr,
-    rechargeLabel, rollDie, initBonusOf, skillBonus,
-    normalizeAttack, normalizeSpellSlot, normalizeTemplate, normalizeInstance, normalizeEncounter,
-    normalizeUi, defaultState, migrateState,
+    INCAPACITATING, CLASSES, CR_OPTIONS, DAMAGE_TYPES, LAIR_INITIATIVE, XP_BY_CR, LOG_CAP, LOG_KINDS,
+    uuid, toInt, clamp, clone, isBlank, modifier, formatMod, formatNum, parseCr, profFromCr, profFromLevel,
+    profOf, rechargeLabel, rollDie, initBonusOf, skillBonus, saveBonus, passivePerception, autoSaveDc,
+    xpForCr, encounterXp,
+    normalizeAttack, normalizeSpellSlot, normalizeConditions, normalizeLog, normalizeTemplate,
+    normalizeInstance, normalizeEncounter, normalizeUi, defaultState, migrateState, templateFromInstance,
     instantiate, makeLair, uniqueName,
-    sortEncounter, rollRecharges, nextTurn, prevTurn,
-    hasCondition, addCondition, removeCondition, toggleCondition, endConcentration, exhaustionEffects,
-    isDead, isStable, concentrationDc, adjustHp, afterHpChange, grantTempHp, applyDamage, applyHealing,
+    sortEncounter, rollRecharges, startTurn, expireConditions, nextTurn, prevTurn, delayTurn,
+    groupKey, rollInitiativeFor, rollInitiative,
+    hasCondition, conditionNames, isImmuneTo, roundsLeft, addCondition, removeCondition, toggleCondition,
+    endConcentration, exhaustionEffects, changeExhaustion,
+    isDead, isStable, concentrationDc, adjustHp, afterHpChange, grantTempHp, damageAfterDefenses,
+    applyDamage, applyHealing, applyRest,
+    parseDice, rollDice, attackDamageExpr, pushLog,
     encounterDifficulty,
   };
 });
