@@ -30,6 +30,10 @@
   const LEGACY_STORAGE_KEY = "dm-dashboard-state-v1";
   const SCHEMA_VERSION = 2;
   const UNDO_LIMIT = 30;
+  const CHANNEL_NAME = "dm-dashboard";
+  const SRD = window.DM_SRD_STARTER || null;
+  /** index.html?view=player is the read-only window the players see. */
+  const PLAYER_MODE = new URLSearchParams(location.search).get("view") === "player";
   const LEVEL_LABEL = { 1: "1st", 2: "2nd", 3: "3rd" };
 
   const $ = (sel, root = document) => root.querySelector(sel);
@@ -41,6 +45,8 @@
   const ICON_EXPAND = svg(`<path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/>`);
   const ICON_PLAY = svg(`<path d="M7 4.5v15l12-7.5z" fill="currentColor"/>`, 14);
   const ICON_PAUSE = svg(`<path d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z" fill="currentColor" stroke="none"/>`, 14);
+  const ICON_COPY = svg(`<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/>`);
+  const ICON_VARIANT = svg(`<path d="M6 3v12M18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM18 9a9 9 0 0 1-9 9"/>`);
   const ICON_DIE = svg(`<rect x="4" y="4" width="16" height="16" rx="3"/><circle cx="9" cy="9" r="1" fill="currentColor"/><circle cx="15" cy="15" r="1" fill="currentColor"/><circle cx="15" cy="9" r="1" fill="currentColor"/><circle cx="9" cy="15" r="1" fill="currentColor"/>`, 12);
 
   const escapeHtml = (str) =>
@@ -91,13 +97,35 @@
 
   const serializeState = () => JSON.stringify({ schemaVersion: SCHEMA_VERSION, savedAt: Date.now(), ...state });
 
+  let lastSavedAt = null;
+  let saveError = null;
+  let quotaWarned = false;
+  const channel = typeof BroadcastChannel === "function" ? new BroadcastChannel(CHANNEL_NAME) : null;
+
+  const isQuotaError = (err) =>
+    !!err && (err.name === "QuotaExceededError" || err.name === "NS_ERROR_DOM_QUOTA_REACHED" || err.code === 22 || err.code === 1014);
+
   function saveState() {
+    if (PLAYER_MODE) return; // the player window only ever reads
     try {
       localStorage.setItem(STORAGE_KEY, serializeState());
+      lastSavedAt = Date.now();
+      saveError = null;
+      quotaWarned = false;
+      // A ping only: the player window re-reads storage and filters it itself.
+      channel?.postMessage({ type: "saved" });
     } catch (err) {
       console.error("Could not persist state.", err);
-      toast("Could not save to localStorage.");
+      saveError = isQuotaError(err) ? "quota" : "other";
+      if (saveError === "quota" && !quotaWarned) {
+        quotaWarned = true;
+        toast("Browser storage is full, so changes are not being saved. Export a backup now, then delete old encounters or clear combat logs to free space.",
+          { action: { label: "Export", run: exportData }, sticky: true });
+      } else if (saveError === "other") {
+        toast("Could not save to browser storage. Export a backup to be safe.", { action: { label: "Export", run: exportData } });
+      }
     }
+    renderSaved();
     snapshotActive();
   }
 
@@ -295,6 +323,54 @@
     logEntry("info", `${combatant.name} left the encounter.`, enc);
   }
 
+  /* ---------- Data: export, import, starter content ---------- */
+  function downloadJson(obj, filename) {
+    const blob = new Blob([JSON.stringify(obj, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  function exportData() {
+    const stamp = new Date().toISOString().slice(0, 10);
+    downloadJson(R.exportPayload(state), `dm-dashboard-${stamp}.json`);
+    toast("Exported all data as JSON.");
+  }
+
+  /** Swap in imported data; nothing is touched until the DM has confirmed. */
+  function applyImport(data, mode) {
+    if (mode === "replace") {
+      state.creatureLibrary = data.creatureLibrary;
+      state.encounters = data.encounters;
+      if (!findEncounter(state.ui.activeEncounterId)) state.ui.activeEncounterId = null;
+      // Old snapshots point at encounters that no longer exist.
+      undoStack.length = 0;
+      seenCards.clear();
+    } else {
+      R.mergeImport(state, data);
+    }
+    commit();
+  }
+
+  function addStarterMonsters() {
+    if (!SRD) return;
+    const added = SRD.MONSTERS.map((m) => ({ ...normalizeTemplate(R.clone(m), "enemy"), id: uuid() }));
+    state.creatureLibrary.enemies.push(...added);
+    toast(`Added ${added.length} SRD monsters to the library.`);
+    commit();
+  }
+
+  function openPlayerWindow() {
+    const url = `${location.pathname}?view=player`;
+    const win = window.open(url, "dm-dashboard-player");
+    if (!win) toast(`Your browser blocked the window. Open ${url} in a new tab instead.`);
+  }
+
   /* ======================================================================
      4. Rendering
      ====================================================================== */
@@ -349,6 +425,7 @@
               ${isOpen ? "Resume" : "Open"}
             </button>
             <button class="btn btn-ghost btn-sm" type="button" data-action="rename-encounter">Rename</button>
+            <button class="btn btn-ghost btn-sm" type="button" data-action="duplicate-encounter" title="Copy with the same combatants and initiative, reset to round 1 at full health">Duplicate</button>
             <span class="spacer"></span>
             <button class="icon-btn icon-btn--danger" type="button" data-action="delete-encounter" title="Delete encounter" aria-label="Delete encounter ${escapeHtml(enc.name)}">${ICON_TRASH}</button>
           </div>
@@ -830,14 +907,31 @@
 
   /* ---------- Library ---------- */
   function renderLibrary() {
+    const ui = state.ui;
+    if (document.activeElement !== $("#lib-search")) $("#lib-search").value = ui.librarySearch;
+    $("#lib-sort").value = ui.librarySort;
+    $("#lib-class").value = ui.libraryClass;
+    $("#lib-cr-min").value = ui.libraryCrMin;
+    $("#lib-cr-max").value = ui.libraryCrMax;
     renderLibraryList("pc", $("#library-pcs"), "No player characters saved yet.");
     renderLibraryList("enemy", $("#library-enemies"), "No enemies saved yet. Every dungeon needs a few.");
   }
 
   function renderLibraryList(type, host, emptyText) {
-    const list = libraryList(type);
+    const all = libraryList(type);
+    const ui = state.ui;
+    const list = R.filterLibrary(all, type, {
+      search: ui.librarySearch, cls: ui.libraryClass, crMin: ui.libraryCrMin, crMax: ui.libraryCrMax, sort: ui.librarySort,
+    });
+    if (!all.length) {
+      const starter = type === "enemy" && SRD
+        ? `<button class="btn btn-outline-red btn-sm" type="button" data-action="add-srd">Add ${SRD.MONSTERS.length} starter monsters (SRD 5.1)</button>`
+        : "";
+      host.innerHTML = `<div class="empty-inline"><p>${emptyText}</p>${starter}</div>`;
+      return;
+    }
     if (!list.length) {
-      host.innerHTML = `<div class="empty-inline">${emptyText}</div>`;
+      host.innerHTML = `<div class="empty-inline">Nothing matches the search or filters.</div>`;
       return;
     }
     host.innerHTML = list.map((t) => {
@@ -852,17 +946,81 @@
               ${lead}
               <span>HP <b>${toInt(t.hp?.max, 0)}</b></span>
               <span>AC <b>${toInt(t.ac, 10)}</b></span>
-              <span>${STAT_KEYS.map((k) => `${k.toUpperCase()} ${formatMod(modifier(t.stats?.[k]))}`).join(" · ")}</span>
-              ${t.attacks?.length ? `<span>⚔ <b>${t.attacks.length}</b></span>` : ""}
+              <span class="lib-abilities">${STAT_KEYS.map((k) => `${k.toUpperCase()} ${formatMod(modifier(t.stats?.[k]))}`).join(" · ")}</span>
+              ${t.attacks?.length ? `<span>Attacks <b>${t.attacks.length}</b></span>` : ""}
               ${t.legendaryActions ? `<span>Legendary <b>${t.legendaryActions}</b></span>` : ""}
               ${t.spellSlots?.length ? `<span>✦ <b>${t.spellSlots.length}</b> spell level${t.spellSlots.length === 1 ? "" : "s"}</span>` : ""}
             </div>
           </div>
           <div class="lib-actions">
             <button class="icon-btn" type="button" data-action="edit-template" title="Edit" aria-label="Edit ${escapeHtml(t.name)}">${ICON_EDIT}</button>
+            <button class="icon-btn" type="button" data-action="duplicate-template" title="Duplicate" aria-label="Duplicate ${escapeHtml(t.name)}">${ICON_COPY}</button>
+            <button class="icon-btn" type="button" data-action="variant-template" title="Clone as variant (opens the builder)" aria-label="Clone ${escapeHtml(t.name)} as a variant">${ICON_VARIANT}</button>
             <button class="icon-btn icon-btn--danger" type="button" data-action="delete-template" title="Delete" aria-label="Delete ${escapeHtml(t.name)}">${ICON_TRASH}</button>
           </div>
         </div>`;
+    }).join("");
+  }
+
+  /* ---------- Saved indicator ---------- */
+  function renderSaved() {
+    const el = $("#saved-indicator");
+    if (!el) return;
+    el.classList.toggle("is-error", !!saveError);
+    if (saveError) {
+      el.textContent = "Not saved";
+      el.title = saveError === "quota" ? "Browser storage is full. Export a backup from Settings." : "The last save failed.";
+      return;
+    }
+    const time = lastSavedAt ? new Date(lastSavedAt) : null;
+    el.textContent = time ? `Saved ${time.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "";
+    el.title = time ? `Last saved to this browser at ${time.toLocaleString()}` : "";
+  }
+
+  /* ---------- Player view (read-only second window) ---------- */
+  function readPlayerProjection() {
+    const raw = storageGet(STORAGE_KEY) || storageGet(LEGACY_STORAGE_KEY);
+    if (!raw) return null;
+    try { return R.playerProjection(R.migrateState(JSON.parse(raw))); } catch { return null; }
+  }
+
+  function renderPlayerView() {
+    const p = readPlayerProjection();
+    const list = $("#player-list");
+    if (!p) {
+      $("#player-round").textContent = "Waiting for the DM…";
+      $("#player-sub").textContent = "No encounter is open yet.";
+      list.innerHTML = "";
+      return;
+    }
+    const cur = p.combatants[p.currentIndex];
+    const next = p.combatants.length > 1 ? p.combatants[(p.currentIndex + 1) % p.combatants.length] : null;
+    $("#player-round").textContent = `Round ${p.round}`;
+    $("#player-sub").textContent = cur ? `${cur.name}'s turn${next ? ` · up next: ${next.name}` : ""}` : "";
+    document.title = cur ? `Round ${p.round}: ${cur.name}` : "DM Dashboard: Player View";
+    list.innerHTML = p.combatants.map((c, i) => {
+      const now = i === p.currentIndex;
+      const conds = (c.conditions || []).map((x) =>
+        `<span class="chip chip--cond">${escapeHtml(x.name)}${x.roundsLeft === null ? "" : ` <small>${x.roundsLeft}r</small>`}</span>`).join("")
+        + (c.exhaustion ? `<span class="chip chip--exh">Exhaustion ${c.exhaustion}</span>` : "");
+      let health = "";
+      if (c.type === "pc") {
+        const pct = c.hp.max > 0 ? clamp((c.hp.current / c.hp.max) * 100, 0, 100) : 0;
+        health = `
+          <span class="player-hp">${c.hp.current} / ${c.hp.max}${c.hp.temp ? ` <small>+${c.hp.temp} temp</small>` : ""}${c.status ? ` <b class="player-status">${c.status}</b>` : ""}</span>
+          <span class="player-bar" role="progressbar" aria-label="${escapeHtml(c.name)} hit points" aria-valuemin="0" aria-valuemax="${c.hp.max}" aria-valuenow="${c.hp.current}">
+            <span class="player-bar-fill ${pct <= 25 ? "is-critical" : pct <= 50 ? "is-wounded" : ""}" style="width:${pct}%"></span>
+          </span>`;
+      } else if (c.type === "enemy") {
+        health = `<span class="player-band player-band--${c.band.toLowerCase()}">${c.band}</span>`;
+      }
+      return `
+        <li class="player-row player-row--${c.type} ${now ? "is-current" : ""}" ${now ? `aria-current="step"` : ""}>
+          <span class="player-marker" aria-hidden="true">${now ? "▶" : ""}</span>
+          <span class="player-name">${escapeHtml(c.name)}${now ? `<span class="sr-only"> (current turn)</span>` : ""}</span>
+          <span class="player-health">${health}</span>
+          <span class="player-conds">${conds}</span>
+        </li>`;
     }).join("");
   }
 
@@ -948,10 +1106,10 @@
   /* ---------- Toast ---------- */
   const TOAST_MAX = 5;
 
-  function toast(message, { action = null, duration = 0 } = {}) {
+  function toast(message, { action = null, duration = 0, sticky = false } = {}) {
     const stack = $("#toast-stack");
     const el = document.createElement("div");
-    el.className = `toast${action ? " toast--action" : ""}`;
+    el.className = `toast${action ? " toast--action" : ""}${sticky ? " toast--sticky" : ""}`;
     const text = document.createElement("span");
     text.textContent = message;
     el.appendChild(text);
@@ -964,7 +1122,16 @@
       el.appendChild(btn);
     }
     stack.appendChild(el);
-    while (stack.children.length > TOAST_MAX) stack.firstElementChild.remove();
+    while (stack.children.length > TOAST_MAX) stack.querySelector(".toast:not(.toast--sticky)")?.remove() ?? stack.firstElementChild.remove();
+    if (sticky) {
+      const close = document.createElement("button");
+      close.type = "button";
+      close.className = "toast-action";
+      close.textContent = "Dismiss";
+      close.addEventListener("click", () => el.remove());
+      el.appendChild(close);
+      return;
+    }
     setTimeout(() => el.remove(), duration || (action ? 7000 : 3000));
   }
 
@@ -1877,6 +2044,14 @@
         break;
       }
 
+      case "duplicate-encounter": {
+        const copy = R.duplicateEncounter(enc);
+        state.encounters.splice(state.encounters.indexOf(enc) + 1, 0, copy);
+        toast(`${copy.name} created at round 1, everyone at full strength.`);
+        commit();
+        break;
+      }
+
       case "delete-encounter": {
         const ok = await confirmDialog({
           title: "Delete Encounter",
@@ -2021,7 +2196,7 @@
   };
 
   document.addEventListener("keydown", (e) => {
-    if (document.querySelector("dialog[open]")) return;
+    if (PLAYER_MODE || document.querySelector("dialog[open]")) return;
     if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "z") {
       // A field with text undoes its own typing; an empty one hands Ctrl+Z to the app.
       if (isTyping() && document.activeElement.value) return;
@@ -2191,6 +2366,7 @@
   $(".library-columns").addEventListener("click", async (e) => {
     const btn = e.target.closest("[data-action]");
     if (!btn) return;
+    if (btn.dataset.action === "add-srd") { addStarterMonsters(); return; }
     const row = btn.closest("[data-template-id]");
     const template = findTemplate(row?.dataset.templateId);
     if (!template) return;
@@ -2198,6 +2374,20 @@
 
     if (btn.dataset.action === "edit-template") {
       openCreatureModal({ mode: "library-edit", type, templateId: template.id });
+    }
+
+    if (btn.dataset.action === "duplicate-template") {
+      const list = libraryList(type);
+      const copy = { ...R.clone(template), id: uuid(), name: `${template.name} (copy)` };
+      list.splice(list.indexOf(template) + 1, 0, copy);
+      toast(`${copy.name} added.`);
+      commit();
+    }
+
+    if (btn.dataset.action === "variant-template") {
+      const seed = { ...R.clone(template), name: `${template.name} (variant)` };
+      delete seed.id;
+      openCreatureModal({ mode: "library-new", type, seed });
     }
 
     if (btn.dataset.action === "delete-template") {
@@ -2212,6 +2402,99 @@
       commit();
     }
   });
+
+  /* ---------- Library toolbar ---------- */
+  const libraryFilter = (key, el, event = "change") => el.addEventListener(event, () => {
+    state.ui[key] = el.value;
+    saveState();
+    renderLibrary();
+  });
+  libraryFilter("librarySearch", $("#lib-search"), "input");
+  libraryFilter("librarySort", $("#lib-sort"));
+  libraryFilter("libraryClass", $("#lib-class"));
+  libraryFilter("libraryCrMin", $("#lib-cr-min"));
+  libraryFilter("libraryCrMax", $("#lib-cr-max"));
+
+  /* ---------- Export / import ---------- */
+  const importModal = $("#import-modal");
+  let pendingImport = null;
+
+  function startImport() {
+    const input = $("#import-file");
+    input.value = "";
+    input.click();
+  }
+
+  $("#import-file").addEventListener("change", async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    let text;
+    try { text = await file.text(); } catch { toast("Could not read that file."); return; }
+    const result = R.parseImport(text);
+    if (!result.ok) {
+      toast(`Import rejected: ${result.error} Nothing was changed.`);
+      return;
+    }
+    pendingImport = result;
+    const c = result.counts;
+    $("#import-summary").textContent = `${file.name} (schema ${result.version}) contains:`;
+    $("#import-counts").innerHTML = [
+      [c.encounters, "encounter", "encounters"], [c.pcs, "player character", "player characters"], [c.enemies, "enemy", "enemies"],
+    ].map(([n, one, many]) => `<li><b>${n}</b> ${n === 1 ? one : many}</li>`).join("");
+    importModal.returnValue = "cancel";
+    openModal(importModal);
+  });
+
+  $("#import-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    importModal.close(e.submitter?.value === "replace" ? "replace" : "merge");
+  });
+  importModal.addEventListener("close", async () => {
+    const mode = importModal.returnValue;
+    const result = pendingImport;
+    pendingImport = null;
+    if (!result || (mode !== "merge" && mode !== "replace")) return;
+    if (mode === "replace") {
+      const ok = await confirmDialog({
+        title: "Replace All Data",
+        html: `Replace your <strong>${state.encounters.length}</strong> encounters and <strong>${state.creatureLibrary.pcs.length + state.creatureLibrary.enemies.length}</strong> library entries with the file's contents? This cannot be undone. Export first if you might want them back.`,
+        okLabel: "Replace",
+      });
+      if (!ok) return;
+    }
+    applyImport(result.data, mode);
+    toast(mode === "replace" ? "Data replaced from the import." : "Import merged into your data.");
+  });
+  wireDialogChrome(importModal);
+
+  $("#btn-export").addEventListener("click", exportData);
+  $("#btn-import").addEventListener("click", startImport);
+
+  /* ---------- Settings ---------- */
+  const settingsModal = $("#settings-modal");
+  function openSettings() {
+    $("#opt-arrow-keys-settings").checked = state.ui.arrowKeys;
+    $("#settings-saved").textContent = lastSavedAt
+      ? `Last saved ${new Date(lastSavedAt).toLocaleString()}.${saveError ? " The latest change could not be saved." : ""}`
+      : "Nothing saved yet.";
+    openModal(settingsModal);
+  }
+  $("#btn-settings").addEventListener("click", openSettings);
+  settingsModal.addEventListener("click", (e) => {
+    const action = e.target.closest("[data-settings]")?.dataset.settings;
+    if (!action) return;
+    if (action === "export") exportData();
+    if (action === "import") { settingsModal.close(); startImport(); }
+    if (action === "player-view") openPlayerWindow();
+    if (action === "shortcuts") { settingsModal.close(); requestAnimationFrame(openShortcuts); }
+  });
+  $("#opt-arrow-keys-settings").addEventListener("change", (e) => {
+    state.ui.arrowKeys = e.target.checked;
+    saveState();
+  });
+  wireDialogChrome(settingsModal);
+
+  $("#btn-player-view").addEventListener("click", openPlayerWindow);
 
   /* ======================================================================
      7. Boot
@@ -2253,8 +2536,26 @@
       <label class="check-chip"><input type="checkbox" data-def="${key}" value="${o}"><span>${o}</span></label>`).join("");
   });
 
+  $("#lib-class").innerHTML = `<option value="">All classes</option>` + CLASSES.map((c) => `<option value="${c}">${c}</option>`).join("");
+  const crChoices = (label) => `<option value="">${label}</option>` + CR_OPTIONS.map((cr) => `<option value="${cr}">${cr}</option>`).join("");
+  $("#lib-cr-min").innerHTML = crChoices("Any");
+  $("#lib-cr-max").innerHTML = crChoices("Any");
+  if (SRD) $("#srd-attribution").textContent = SRD.ATTRIBUTION;
+
+  if (PLAYER_MODE) {
+    // Never render the DM screen here; only the filtered projection is drawn.
+    document.body.classList.add("is-player");
+    $("#player-view").hidden = false;
+    renderPlayerView();
+    channel?.addEventListener("message", renderPlayerView);
+    window.addEventListener("storage", (e) => { if (e.key === STORAGE_KEY) renderPlayerView(); });
+    return;
+  }
+
   state = loadState();
+  try { lastSavedAt = JSON.parse(storageGet(STORAGE_KEY) || "null")?.savedAt ?? null; } catch { lastSavedAt = null; }
   state.encounters.forEach(sortEncounter);
   snapshotActive();
   renderAll();
+  renderSaved();
 })();

@@ -972,6 +972,151 @@
     if (enc.log.length > LOG_CAP) enc.log.splice(0, enc.log.length - LOG_CAP);
   }
 
+  /* ---------- Export / import ---------- */
+
+  const SCHEMA_VERSION = 2;
+
+  /** The downloadable backup. UI preferences stay out of it. */
+  const exportPayload = (state, now = Date.now()) => ({
+    app: "dm-dashboard",
+    schemaVersion: SCHEMA_VERSION,
+    exportedAt: new Date(now).toISOString(),
+    creatureLibrary: clone(state.creatureLibrary),
+    encounters: clone(state.encounters),
+  });
+
+  /**
+   * Validate an import before anything touches the live state.
+   * Accepts v2 exports and raw v1/v2 saves. Returns
+   * { ok: true, data: { creatureLibrary, encounters }, counts } or { ok: false, error }.
+   */
+  function parseImport(textOrObject) {
+    let obj = textOrObject;
+    if (typeof obj === "string") {
+      try { obj = JSON.parse(obj); } catch { return { ok: false, error: "That file isn't valid JSON." }; }
+    }
+    if (!obj || typeof obj !== "object" || Array.isArray(obj)) return { ok: false, error: "That file isn't a DM Dashboard export." };
+    const version = obj.schemaVersion === undefined ? 1 : obj.schemaVersion;
+    if (!Number.isInteger(version) || version < 1) return { ok: false, error: "The file's schemaVersion is not valid." };
+    if (version > SCHEMA_VERSION) return { ok: false, error: `This file is from a newer version (schema ${version}). Update the app first.` };
+    const lib = obj.creatureLibrary;
+    if (lib === undefined && obj.encounters === undefined) return { ok: false, error: "The file has no library and no encounters." };
+    if (lib !== undefined && (typeof lib !== "object" || lib === null || Array.isArray(lib))) return { ok: false, error: "creatureLibrary must be an object." };
+    for (const key of ["pcs", "enemies"]) {
+      if (lib?.[key] !== undefined && !Array.isArray(lib[key])) return { ok: false, error: `creatureLibrary.${key} must be a list.` };
+    }
+    if (obj.encounters !== undefined && !Array.isArray(obj.encounters)) return { ok: false, error: "encounters must be a list." };
+    const bad = [...(lib?.pcs || []), ...(lib?.enemies || []), ...(obj.encounters || [])].some((x) => !x || typeof x !== "object" || Array.isArray(x));
+    if (bad) return { ok: false, error: "Some entries in the file are not objects." };
+    const migrated = migrateState({ creatureLibrary: lib || {}, encounters: obj.encounters || [] });
+    const data = { creatureLibrary: migrated.creatureLibrary, encounters: migrated.encounters };
+    return {
+      ok: true,
+      version,
+      data,
+      counts: { encounters: data.encounters.length, pcs: data.creatureLibrary.pcs.length, enemies: data.creatureLibrary.enemies.length },
+    };
+  }
+
+  /** Merge keeps everything that exists; incoming items whose id is taken get a fresh id. */
+  function mergeImport(state, data) {
+    const ids = new Set([...state.creatureLibrary.pcs, ...state.creatureLibrary.enemies].map((t) => t.id));
+    const fresh = (t) => (ids.has(t.id) ? { ...t, id: uuid() } : t);
+    data.creatureLibrary.pcs.forEach((t) => { const n = fresh(t); ids.add(n.id); state.creatureLibrary.pcs.push(n); });
+    data.creatureLibrary.enemies.forEach((t) => { const n = fresh(t); ids.add(n.id); state.creatureLibrary.enemies.push(n); });
+    const encIds = new Set(state.encounters.map((e) => e.id));
+    data.encounters.forEach((e) => state.encounters.push(encIds.has(e.id) ? { ...e, id: uuid() } : e));
+    return state;
+  }
+
+  /* ---------- Encounters ---------- */
+
+  /** A fresh copy for a rerun: same combatants and initiative, everything else reset. */
+  function duplicateEncounter(enc, name = `${enc.name} (copy)`) {
+    const copy = normalizeEncounter({ name, combatants: [], round: 1, currentTurnIndex: 0 });
+    copy.combatants = enc.combatants.map((c) => {
+      if (c.type === "lair") return normalizeInstance({ ...clone(c), instanceId: uuid() });
+      const t = templateFromInstance(c);
+      const inst = instantiate(t, c.type, c.initiative, c.templateId);
+      inst.name = c.name;
+      inst.initRank = c.initRank || 0;
+      inst.notes = c.notes;
+      return inst;
+    });
+    sortEncounter(copy);
+    copy.currentTurnIndex = 0;
+    return copy;
+  }
+
+  /* ---------- Library ---------- */
+
+  /**
+   * Search, filter and sort a library list. Options: { search, cls, crMin,
+   * crMax, sort } where sort is "name" | "cr" | "level" | "hp".
+   */
+  function filterLibrary(list, type, { search = "", cls = "", crMin = "", crMax = "", sort = "name" } = {}) {
+    const q = String(search).trim().toLowerCase();
+    const lo = isBlank(crMin) ? -Infinity : parseCr(crMin);
+    const hi = isBlank(crMax) ? Infinity : parseCr(crMax);
+    const out = list.filter((t) => {
+      if (q && ![t.name, t.cls, t.race, t.creatureType].some((v) => String(v || "").toLowerCase().includes(q))) return false;
+      if (type === "pc" && cls && t.cls !== cls) return false;
+      if (type === "enemy" && (lo > -Infinity || hi < Infinity)) {
+        if (isBlank(t.cr)) return false;
+        const cr = parseCr(t.cr);
+        if (cr < lo || cr > hi) return false;
+      }
+      return true;
+    });
+    const byName = (a, b) => a.name.localeCompare(b.name);
+    const key = {
+      cr: (t) => (isBlank(t.cr) ? -1 : parseCr(t.cr)),
+      level: (t) => toInt(t.level, 0),
+      hp: (t) => toInt(t.hp?.max, 0),
+    }[sort];
+    return out.sort(key ? (a, b) => (key(b) - key(a)) || byName(a, b) : byName);
+  }
+
+  /* ---------- Player view ---------- */
+
+  /** Enemy health as players see it: no numbers. */
+  function healthBand(c) {
+    if (isDead(c) || c.hp.current <= 0) return "Down";
+    const max = Math.max(1, c.hp.max);
+    if (c.hp.current >= max) return "Unharmed";
+    if (c.hp.current <= max / 4) return "Critical";
+    if (c.hp.current <= max / 2) return "Bloodied";
+    return "Hurt";
+  }
+
+  /**
+   * Everything the player window is allowed to know, built field by field so
+   * nothing hidden (enemy AC or exact HP, stats, notes, attacks, lair text)
+   * can leak through a spread.
+   */
+  function playerProjection(state) {
+    const enc = state?.encounters?.find((e) => e.id === state.ui?.activeEncounterId);
+    if (!enc) return null;
+    return {
+      round: enc.round,
+      currentIndex: enc.combatants.length ? clamp(enc.currentTurnIndex, 0, enc.combatants.length - 1) : -1,
+      combatants: enc.combatants.map((c) => {
+        if (c.type === "lair") return { type: "lair", name: "Lair action" };
+        const base = {
+          type: c.type,
+          name: c.name,
+          conditions: c.conditions.map((x) => ({ name: x.name, roundsLeft: roundsLeft(x, enc.round) })),
+          exhaustion: c.exhaustion,
+        };
+        if (c.type === "pc") {
+          const status = isDead(c) ? "Dead" : c.hp.current > 0 ? null : isStable(c) ? "Stable" : "Dying";
+          return { ...base, hp: { current: c.hp.current, max: c.hp.max, temp: c.hp.temp }, status };
+        }
+        return { ...base, band: healthBand(c) };
+      }),
+    };
+  }
+
   /* ---------- Difficulty ---------- */
 
   /**
@@ -1018,6 +1163,8 @@
     isDead, isStable, concentrationDc, adjustHp, afterHpChange, grantTempHp, damageAfterDefenses,
     applyDamage, applyHealing, applyRest,
     parseDice, rollDice, attackDamageExpr, pushLog,
+    SCHEMA_VERSION, exportPayload, parseImport, mergeImport, duplicateEncounter, filterLibrary,
+    healthBand, playerProjection,
     encounterDifficulty,
   };
 });

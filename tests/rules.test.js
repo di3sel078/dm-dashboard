@@ -613,6 +613,127 @@
     eq(s.ui.groupInitiative, true);
   });
 
+  /* ---------- SRD starter set ---------- */
+
+  test("SRD starter monsters match their printed derived values", () => {
+    const SRD = isNode ? require("../data/srd-starter.js") : root.DM_SRD_STARTER;
+    if (!SRD) throw new Error("data/srd-starter.js not loaded");
+    const byName = Object.fromEntries(SRD.MONSTERS.map((m) => [m.name, R.normalizeInstance({ ...m, type: "enemy" })]));
+    // Printed passive Perception, skill and save bonuses from the 2014 stat blocks.
+    const passive = {
+      Bandit: 10, Cultist: 10, Kobold: 8, Goblin: 9, Skeleton: 9, Wolf: 13, Zombie: 8, Gnoll: 10, Hobgoblin: 10, Orc: 10,
+      "Brown Bear": 13, Bugbear: 10, "Dire Wolf": 13, Ghoul: 10, Ogre: 8, Owlbear: 13, "Young Green Dragon": 17, "Adult Red Dragon": 23,
+    };
+    eq(Object.keys(byName).sort(), Object.keys(passive).sort(), "monster list");
+    Object.entries(passive).forEach(([n, p]) => eq(R.passivePerception(byName[n]), p, `${n} passive`));
+    const skills = [
+      ["Cultist", "deception", 2], ["Cultist", "religion", 2], ["Goblin", "stealth", 6], ["Wolf", "perception", 3], ["Wolf", "stealth", 4],
+      ["Orc", "intimidation", 2], ["Brown Bear", "perception", 3], ["Bugbear", "stealth", 6], ["Bugbear", "survival", 2],
+      ["Dire Wolf", "perception", 3], ["Dire Wolf", "stealth", 4], ["Owlbear", "perception", 3],
+      ["Young Green Dragon", "deception", 5], ["Young Green Dragon", "perception", 7], ["Young Green Dragon", "stealth", 4],
+      ["Adult Red Dragon", "perception", 13], ["Adult Red Dragon", "stealth", 6],
+    ];
+    skills.forEach(([n, k, v]) => eq(R.skillBonus(byName[n], k), v, `${n} ${k}`));
+    const saves = [["Zombie", "wis", 0], ["Young Green Dragon", "dex", 4], ["Young Green Dragon", "con", 6], ["Young Green Dragon", "wis", 4],
+      ["Young Green Dragon", "cha", 5], ["Adult Red Dragon", "dex", 6], ["Adult Red Dragon", "con", 13], ["Adult Red Dragon", "wis", 7], ["Adult Red Dragon", "cha", 11]];
+    saves.forEach(([n, k, v]) => eq(R.saveBonus(byName[n], k), v, `${n} ${k} save`));
+    // Save DCs agree with 8 + proficiency + ability modifier.
+    Object.values(byName).forEach((m) => m.attacks.filter((a) => a.kind === "save").forEach((a) =>
+      eq(a.saveDc, R.autoSaveDc(m, a.ability), `${m.name} ${a.name} DC`)));
+    eq(R.xpForCr(byName["Adult Red Dragon"].cr), 18000);
+    ok(SRD.ATTRIBUTION.includes("Creative Commons Attribution 4.0"), "attribution text");
+  });
+
+  /* ---------- Export / import ---------- */
+
+  test("export round-trips through import", () => {
+    const st = R.migrateState(R.clone(V1_SAVE));
+    const payload = R.exportPayload(st, 0);
+    eq([payload.schemaVersion, payload.app], [2, "dm-dashboard"]);
+    const back = R.parseImport(JSON.stringify(payload));
+    ok(back.ok, back.error);
+    eq(back.counts, { encounters: 1, pcs: 1, enemies: 2 });
+    eq(JSON.stringify(back.data.encounters), JSON.stringify(st.encounters), "encounters identical");
+  });
+
+  test("import accepts a raw v1 save and rejects malformed files", () => {
+    const v1 = R.parseImport(JSON.stringify(V1_SAVE));
+    ok(v1.ok && v1.version === 1, "v1 accepted");
+    const bad = ["not json", "[]", "null", JSON.stringify({ schemaVersion: 3, encounters: [] }), JSON.stringify({ hello: 1 }),
+      JSON.stringify({ creatureLibrary: [] }), JSON.stringify({ encounters: {} }), JSON.stringify({ creatureLibrary: { pcs: [1] } }),
+      JSON.stringify({ schemaVersion: "2", encounters: [] })];
+    bad.forEach((b) => eq(R.parseImport(b).ok, false, `reject ${b}`));
+  });
+
+  test("merge import never overwrites existing ids", () => {
+    const st = R.migrateState(R.clone(V1_SAVE));
+    const incoming = R.parseImport(JSON.stringify(V1_SAVE)).data;
+    R.mergeImport(st, incoming);
+    eq(st.creatureLibrary.enemies.length, 4);
+    eq(new Set(st.creatureLibrary.enemies.map((t) => t.id)).size, 4, "ids unique");
+    eq(new Set(st.encounters.map((e) => e.id)).size, 2);
+  });
+
+  /* ---------- Duplicate encounter ---------- */
+
+  test("duplicate encounter resets the fight but keeps combatants and initiative", () => {
+    const enc = R.migrateState(R.clone(V1_SAVE)).encounters[0];
+    const copy = R.duplicateEncounter(enc);
+    eq([copy.round, copy.currentTurnIndex, copy.clock.elapsedMs, copy.log.length], [1, 0, 0, 0]);
+    eq(copy.combatants.map((c) => [c.name, c.initiative]), enc.combatants.map((c) => [c.name, c.initiative]));
+    ok(copy.combatants.every((c, i) => c.instanceId !== enc.combatants[i].instanceId), "new instance ids");
+    const aria = copy.combatants.find((c) => c.name === "Aria");
+    eq([aria.hp.current, aria.conditions.length, aria.exhaustion, aria.deathSaves.fail, aria.spellSlots[0].current], [38, 0, 0, 0, 4]);
+    eq(copy.combatants.find((c) => c.name === "Drake").recharges[0].available, true);
+    eq(copy.combatants.find((c) => c.type === "lair").notes, "Rocks fall");
+    eq(copy.combatants.find((c) => c.name === "Drake").concentration.active, false);
+  });
+
+  /* ---------- Library ---------- */
+
+  test("library search, filters and sort", () => {
+    const st = R.migrateState({ creatureLibrary: { enemies: [
+      { name: "Goblin", cr: "1/4", hp: { max: 7 } }, { name: "Ogre", cr: "2", hp: { max: 59 } },
+      { name: "Adult Red Dragon", cr: "17", hp: { max: 256 } }, { name: "Mystery", cr: "", hp: { max: 1 } },
+    ], pcs: [{ name: "Aria", cls: "Ranger", level: 5 }, { name: "Brom", cls: "Fighter", level: 7 }] } });
+    const names = (l) => l.map((t) => t.name);
+    const e = st.creatureLibrary.enemies;
+    eq(names(R.filterLibrary(e, "enemy", { search: "og" })), ["Ogre"]);
+    eq(names(R.filterLibrary(e, "enemy", { crMin: "1/4", crMax: "2" })), ["Goblin", "Ogre"]);
+    eq(names(R.filterLibrary(e, "enemy", { sort: "cr" })), ["Adult Red Dragon", "Ogre", "Goblin", "Mystery"]);
+    eq(names(R.filterLibrary(e, "enemy", { sort: "hp" })), ["Adult Red Dragon", "Ogre", "Goblin", "Mystery"]);
+    eq(names(R.filterLibrary(st.creatureLibrary.pcs, "pc", { cls: "Fighter" })), ["Brom"]);
+    eq(names(R.filterLibrary(st.creatureLibrary.pcs, "pc", { sort: "level" })), ["Brom", "Aria"]);
+  });
+
+  /* ---------- Player view ---------- */
+
+  test("health bands", () => {
+    const at = (cur) => R.healthBand(enemy({ hp: { max: 40, current: cur, temp: 0 } }));
+    eq([at(40), at(39), at(21), at(20), at(11), at(10), at(1), at(0)],
+      ["Unharmed", "Hurt", "Hurt", "Bloodied", "Bloodied", "Critical", "Critical", "Down"]);
+  });
+
+  test("player projection never contains hidden information", () => {
+    const st = R.migrateState(R.clone(V1_SAVE));
+    const enc = st.encounters[0];
+    const goblin = enc.combatants.find((c) => c.name === "Goblin 1");
+    goblin.notes = "SECRET-NOTE";
+    enc.combatants[0].notes = "SECRET-LAIR";
+    enc.combatants[0].name = "SECRET-LAIR-NAME";
+    const p = R.playerProjection(st);
+    const text = JSON.stringify(p);
+    ["SECRET", "Scimitar", "\"ac\"", "\"stats\"", "\"attacks\"", "\"notes\"", "\"cr\"", "concentration"].forEach((s) =>
+      ok(!text.includes(s), `leaked ${s}`));
+    const g = p.combatants.find((c) => c.name === "Goblin 1");
+    eq(Object.keys(g).sort(), ["band", "conditions", "exhaustion", "name", "type"]);
+    eq(g.band, "Bloodied");
+    const aria = p.combatants.find((c) => c.name === "Aria");
+    eq([aria.hp.current, aria.hp.max, aria.status], [0, 38, "Dying"], "PC HP is shown");
+    eq(p.combatants[0], { type: "lair", name: "Lair action" });
+    eq(R.playerProjection({ encounters: [], ui: {} }), null);
+  });
+
   /* ---------- Report ---------- */
 
   const failed = results.filter((r) => !r.ok);
