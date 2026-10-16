@@ -17,41 +17,18 @@
      1. Constants & utilities
      ====================================================================== */
 
-  const STORAGE_KEY = "dm-dashboard-state-v1";
-  const STAT_KEYS = ["str", "dex", "con", "int", "wis", "cha"];
-  const STAT_NAMES = {
-    str: "Strength", dex: "Dexterity", con: "Constitution",
-    int: "Intelligence", wis: "Wisdom", cha: "Charisma",
-  };
+  const R = window.DMRules;
+  const {
+    STAT_KEYS, STAT_NAMES, SKILL_BY_KEY, SKILLS, CONDITIONS, CONDITION_EFFECTS, CLASSES, CR_OPTIONS,
+    DAMAGE_TYPES, LAIR_INITIATIVE, uuid, toInt, clamp, modifier, formatMod, formatNum,
+    profFromCr, rechargeLabel, initBonusOf, skillBonus, normalizeAttack, normalizeTemplate,
+    normalizeEncounter, normalizeInstance, instantiate, makeLair, uniqueName, sortEncounter,
+  } = R;
+
+  const STORAGE_KEY = "dm-dashboard-state-v2";
+  const LEGACY_STORAGE_KEY = "dm-dashboard-state-v1";
+  const SCHEMA_VERSION = 2;
   const LEVEL_LABEL = { 1: "1st", 2: "2nd", 3: "3rd" };
-
-  const SKILLS = [
-    ["acrobatics", "Acrobatics", "dex"], ["animalHandling", "Animal Handling", "wis"],
-    ["arcana", "Arcana", "int"], ["athletics", "Athletics", "str"],
-    ["deception", "Deception", "cha"], ["history", "History", "int"],
-    ["insight", "Insight", "wis"], ["intimidation", "Intimidation", "cha"],
-    ["investigation", "Investigation", "int"], ["medicine", "Medicine", "wis"],
-    ["nature", "Nature", "int"], ["perception", "Perception", "wis"],
-    ["performance", "Performance", "cha"], ["persuasion", "Persuasion", "cha"],
-    ["religion", "Religion", "int"], ["sleightOfHand", "Sleight of Hand", "dex"],
-    ["stealth", "Stealth", "dex"], ["survival", "Survival", "wis"],
-  ].map(([key, name, ability]) => ({ key, name, ability }));
-  const SKILL_BY_KEY = Object.fromEntries(SKILLS.map((s) => [s.key, s]));
-
-  const CONDITIONS = [
-    "Blinded", "Charmed", "Deafened", "Frightened", "Grappled", "Incapacitated", "Invisible",
-    "Paralyzed", "Petrified", "Poisoned", "Prone", "Restrained", "Stunned", "Unconscious",
-  ];
-  const CLASSES = [
-    "Artificer", "Barbarian", "Bard", "Cleric", "Druid", "Fighter", "Monk",
-    "Paladin", "Ranger", "Rogue", "Sorcerer", "Warlock", "Wizard", "Other",
-  ];
-  const CR_OPTIONS = ["0", "1/8", "1/4", "1/2", ...Array.from({ length: 30 }, (_, i) => String(i + 1))];
-  const DAMAGE_TYPES = [
-    "acid", "bludgeoning", "cold", "fire", "force", "lightning", "necrotic",
-    "piercing", "poison", "psychic", "radiant", "slashing", "thunder",
-  ];
-  const LAIR_INITIATIVE = 20;
 
   const $ = (sel, root = document) => root.querySelector(sel);
   const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
@@ -64,52 +41,12 @@
   const ICON_PAUSE = svg(`<path d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z" fill="currentColor" stroke="none"/>`, 14);
   const ICON_RESET = svg(`<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/>`, 14);
 
-  const uuid = () =>
-    (crypto.randomUUID ? crypto.randomUUID() :
-      "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
-        const r = (Math.random() * 16) | 0;
-        return (c === "x" ? r : (r & 0x3) | 0x8).toString(16);
-      }));
-
   const escapeHtml = (str) =>
     String(str ?? "")
       .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 
-  const toInt = (value, fallback = 0) => {
-    const n = parseInt(value, 10);
-    return Number.isFinite(n) ? n : fallback;
-  };
-
-  const clamp = (n, lo, hi) => Math.min(hi, Math.max(lo, n));
-  const clone = (obj) => JSON.parse(JSON.stringify(obj));
-
-  const modifier = (score) => Math.floor((toInt(score, 10) - 10) / 2);
-  const formatMod = (m) => (m >= 0 ? `+${m}` : `−${Math.abs(m)}`);
   const ordinal = (n) => LEVEL_LABEL[n] || `${n}th`;
-
-  /** "1/4" → 0.25, "" → 0 */
-  const parseCr = (cr) => {
-    const s = String(cr ?? "");
-    if (s.includes("/")) {
-      const [n, d] = s.split("/").map(Number);
-      return d ? n / d : 0;
-    }
-    const n = parseFloat(s);
-    return Number.isFinite(n) ? n : 0;
-  };
-  /** Proficiency bonus by CR: +2 at CR 0–4, +3 at 5–8, … +9 at 29–30. */
-  const profFromCr = (cr) => 2 + Math.floor((Math.max(parseCr(cr), 1) - 1) / 4);
-  const formatNum = (n) => String(+n.toFixed(2));
-
-  const skillBonus = (c, key) => {
-    const skill = SKILL_BY_KEY[key];
-    return skill ? modifier(c.stats?.[skill.ability]) + profFromCr(c.cr) : 0;
-  };
-  const initBonusOf = (c) =>
-    (c.type === "pc" ? toInt(c.initBonus, modifier(c.stats?.dex)) : modifier(c.stats?.dex));
-  const rechargeLabel = (min) => (min >= 6 ? "6" : `${min}–6`);
-  const rollD6 = () => 1 + Math.floor(Math.random() * 6);
 
   /** "1d6+2 slashing" */
   function damageText(atk) {
@@ -123,147 +60,36 @@
      2. State & storage
      ====================================================================== */
 
-  const defaultState = () => ({
-    creatureLibrary: { pcs: [], enemies: [] },
-    encounters: [],
-    ui: { view: "encounters", activeEncounterId: null },
-  });
+  let state = R.defaultState();
 
-  let state = defaultState();
-
-  function normalizeAttack(a = {}) {
-    return {
-      name: String(a.name ?? "").trim() || "Attack",
-      ability: STAT_KEYS.includes(a.ability) ? a.ability : "str",
-      toHit: toInt(a.toHit, 0),
-      dmgDice: String(a.dmgDice ?? "").trim(),
-      dmgBonus: toInt(a.dmgBonus, 0),
-      dmgType: String(a.dmgType ?? "").trim(),
-      autoToHit: a.autoToHit !== false,
-      autoDmg: a.autoDmg !== false,
-    };
-  }
+  const storageGet = (key) => { try { return localStorage.getItem(key); } catch { return null; } };
 
   /**
-   * Fill in every field a stat block of this type should have.
-   * Doubles as the migration path for data saved by earlier versions.
+   * v2 if present; otherwise migrate v1 through the normalizers and write it
+   * as v2. The v1 key is never touched, so it stays as a backup.
    */
-  function normalizeTemplate(t, type) {
-    const stats = {};
-    STAT_KEYS.forEach((k) => { stats[k] = clamp(toInt(t.stats?.[k], 10), 1, 30); });
-    const block = {
-      ...t,
-      name: String(t.name ?? "").trim() || "Unnamed",
-      hp: { max: Math.max(0, toInt(t.hp?.max, 0)) },
-      ac: Math.max(0, toInt(t.ac, 10)),
-      speed: String(t.speed ?? "").trim(),
-      stats,
-      spellSlots: (Array.isArray(t.spellSlots) ? t.spellSlots : [])
-        .map((s) => {
-          const max = Math.max(0, toInt(s.max, 0));
-          return { level: clamp(toInt(s.level, 1), 1, 9), max, current: clamp(toInt(s.current, 0), 0, max) };
-        })
-        .sort((a, b) => a.level - b.level),
-    };
-    if (type === "pc") {
-      block.level = clamp(toInt(t.level, 1), 1, 20);
-      block.initBonus = toInt(t.initBonus, modifier(stats.dex));
-      block.cls = String(t.cls ?? "");
-      block.race = String(t.race ?? "").trim();
-    } else {
-      block.cr = CR_OPTIONS.includes(String(t.cr)) ? String(t.cr) : "";
-      block.skills = (Array.isArray(t.skills) ? t.skills : []).filter((k) => SKILL_BY_KEY[k]);
-      block.attacks = (Array.isArray(t.attacks) ? t.attacks : []).map(normalizeAttack);
-      block.recharges = (Array.isArray(t.recharges) ? t.recharges : []).map((r) => ({
-        name: String(r.name ?? "").trim() || "Ability",
-        min: clamp(toInt(r.min, 5), 2, 6),
-      }));
-    }
-    return block;
-  }
-
-  /** A combatant: a normalised stat block plus encounter-only state. */
-  function normalizeInstance(c) {
-    if (c.type === "lair") {
-      return {
-        instanceId: c.instanceId || uuid(),
-        templateId: null,
-        type: "lair",
-        name: String(c.name ?? "").trim() || "Lair Action",
-        initiative: toInt(c.initiative, LAIR_INITIATIVE),
-        notes: String(c.notes ?? ""),
-      };
-    }
-    const type = c.type === "pc" ? "pc" : "enemy";
-    const base = normalizeTemplate(c, type);
-    delete base.id;
-    const max = base.hp.max;
-    return {
-      ...base,
-      instanceId: c.instanceId || uuid(),
-      templateId: c.templateId ?? null,
-      type,
-      initiative: toInt(c.initiative, 0),
-      hp: {
-        max,
-        current: Math.max(0, toInt(c.hp?.current, max)),
-        temp: Math.max(0, toInt(c.hp?.temp, 0)),
-      },
-      recharges: (base.recharges || []).map((r, i) => ({
-        ...r,
-        available: c.recharges?.[i]?.available !== false,
-        lastRoll: toInt(c.recharges?.[i]?.lastRoll, 0) || null,
-      })),
-      conditions: (Array.isArray(c.conditions) ? c.conditions : []).filter((x) => CONDITIONS.includes(x)),
-      exhaustion: clamp(toInt(c.exhaustion, 0), 0, 6),
-      concentration: { active: !!c.concentration?.active, spell: String(c.concentration?.spell ?? "") },
-      deathSaves: {
-        success: clamp(toInt(c.deathSaves?.success, 0), 0, 3),
-        fail: clamp(toInt(c.deathSaves?.fail, 0), 0, 3),
-      },
-    };
-  }
-
-  function normalizeEncounter(enc) {
-    return {
-      ...enc,
-      id: enc.id || uuid(),
-      name: String(enc.name ?? "").trim() || "Encounter",
-      round: Math.max(1, toInt(enc.round, 1)),
-      currentTurnIndex: Math.max(0, toInt(enc.currentTurnIndex, 0)),
-      combatants: (Array.isArray(enc.combatants) ? enc.combatants : []).map(normalizeInstance),
-      clock: {
-        elapsedMs: Math.max(0, Number(enc.clock?.elapsedMs) || 0),
-        startedAt: Number.isFinite(enc.clock?.startedAt) ? enc.clock.startedAt : null,
-      },
-    };
-  }
-
   function loadState() {
+    const raw = storageGet(STORAGE_KEY);
+    const legacy = raw ? null : storageGet(LEGACY_STORAGE_KEY);
+    if (!raw && !legacy) return R.defaultState();
     try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (!raw) return defaultState();
-      const parsed = JSON.parse(raw);
-      const base = defaultState();
-      const lib = (list, type) =>
-        (Array.isArray(list) ? list : []).map((t) => ({ ...normalizeTemplate(t, type), id: t.id || uuid() }));
-      return {
-        creatureLibrary: {
-          pcs: lib(parsed?.creatureLibrary?.pcs, "pc"),
-          enemies: lib(parsed?.creatureLibrary?.enemies, "enemy"),
-        },
-        encounters: (Array.isArray(parsed?.encounters) ? parsed.encounters : []).map(normalizeEncounter),
-        ui: { ...base.ui, ...(parsed?.ui || {}) },
-      };
+      const migrated = R.migrateState(JSON.parse(raw || legacy));
+      if (legacy) {
+        state = migrated;
+        saveState();
+      }
+      return migrated;
     } catch (err) {
       console.warn("Could not read saved state, starting fresh.", err);
-      return defaultState();
+      return R.defaultState();
     }
   }
+
+  const serializeState = () => JSON.stringify({ schemaVersion: SCHEMA_VERSION, savedAt: Date.now(), ...state });
 
   function saveState() {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      localStorage.setItem(STORAGE_KEY, serializeState());
     } catch (err) {
       console.error("Could not persist state.", err);
       toast("Could not save to localStorage.");
@@ -299,11 +125,11 @@
       speed: values.speed,
       stats,
       spellSlots: values.spellSlots,
+      // Blank init bonus falls back to the DEX modifier.
+      initBonus: values.initBonus === "" ? null : values.initBonus,
     };
     const specific = type === "pc" ? {
       level: values.level,
-      // Blank init bonus falls back to the DEX modifier.
-      initBonus: values.initBonus === "" ? undefined : values.initBonus,
       cls: values.cls,
       race: values.race,
     } : {
@@ -313,67 +139,6 @@
       recharges: (values.recharges || []).filter((r) => String(r.name).trim()),
     };
     return normalizeTemplate({ ...shared, ...specific }, type);
-  }
-
-  /** Clone a template into a fresh combatant at full HP, full slots, everything recharged. */
-  function instantiate(template, type, initiative, templateId = null) {
-    const src = normalizeTemplate(clone(template), type);
-    return normalizeInstance({
-      ...src,
-      instanceId: uuid(),
-      templateId,
-      type,
-      initiative: toInt(initiative, 0),
-      hp: { max: src.hp.max, current: src.hp.max, temp: 0 },
-      spellSlots: src.spellSlots.map((s) => ({ ...s, current: s.max })),
-    });
-  }
-
-  const makeLair = () => normalizeInstance({ type: "lair", initiative: LAIR_INITIATIVE });
-
-  /**
-   * Sort by initiative desc. Ties: lair actions lose, then higher initiative
-   * bonus, then higher DEX score, then stable insertion order.
-   * Keeps currentTurnIndex pointing at the same combatant it did before the sort.
-   */
-  function sortEncounter(enc) {
-    // Before the first "Next Turn" (round 1, pointer at the top) the DM is still
-    // setting up, so the pointer stays on whoever ends up first after sorting.
-    const settingUp = enc.round === 1 && enc.currentTurnIndex === 0;
-    const currentId = settingUp ? null : (enc.combatants[enc.currentTurnIndex]?.instanceId ?? null);
-    const isLair = (c) => (c.type === "lair" ? 1 : 0);
-    enc.combatants.sort((a, b) =>
-      (b.initiative - a.initiative) ||
-      (isLair(a) - isLair(b)) ||
-      (initBonusOf(b) - initBonusOf(a)) ||
-      (toInt(b.stats?.dex, 10) - toInt(a.stats?.dex, 10)));
-    if (currentId) {
-      const idx = enc.combatants.findIndex((c) => c.instanceId === currentId);
-      enc.currentTurnIndex = idx >= 0 ? idx : 0;
-    }
-    if (enc.combatants.length === 0) enc.currentTurnIndex = 0;
-    else enc.currentTurnIndex = clamp(enc.currentTurnIndex, 0, enc.combatants.length - 1);
-  }
-
-  /**
-   * Ensure duplicate names get numbered: Goblin, Goblin → Goblin 1, Goblin 2.
-   * Returns the name to use for a new combatant and renames an existing
-   * un-numbered twin in place if needed.
-   */
-  function uniqueName(enc, baseName) {
-    const base = baseName.trim();
-    const pattern = new RegExp(`^${base.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?: (\\d+))?$`);
-    const twins = enc.combatants.filter((c) => pattern.test(c.name));
-    if (twins.length === 0) return base;
-
-    let highest = 0;
-    twins.forEach((c) => {
-      const m = c.name.match(pattern);
-      const n = m && m[1] ? toInt(m[1], 0) : 0;
-      if (n === 0) { c.name = `${base} 1`; highest = Math.max(highest, 1); }
-      else highest = Math.max(highest, n);
-    });
-    return `${base} ${highest + 1}`;
   }
 
   function addCombatantsFromTemplate(enc, templateId, initiative, count) {
@@ -390,45 +155,40 @@
     return n;
   }
 
-  /**
-   * Damage drains temp HP first and floors at 0. Healing caps at max HP;
-   * adding HP to a creature already at max adds it as temp HP instead.
-   */
-  function adjustHp(combatant, delta) {
-    const max = Math.max(0, toInt(combatant.hp.max, 0));
-    const cur = Math.max(0, toInt(combatant.hp.current, 0));
-    const temp = Math.max(0, toInt(combatant.hp.temp, 0));
-    if (delta < 0) {
-      const absorbed = Math.min(temp, -delta);
-      combatant.hp.temp = temp - absorbed;
-      combatant.hp.current = Math.max(0, cur + delta + absorbed);
-    } else if (cur >= max) {
-      combatant.hp.temp = temp + delta;
-    } else {
-      combatant.hp.current = Math.min(max, cur + delta);
-    }
+  /** Surface rule events (from rules.js) to the DM. */
+  function announce(events) {
+    (events || []).forEach((ev) => toast(ev.text));
   }
 
-  /** Side effects of HP changing: death saves reset on recovery, 0 HP breaks concentration. */
-  function afterHpChange(c) {
-    if (c.type === "lair") return;
-    if (c.hp.current > 0) {
-      c.deathSaves = { success: 0, fail: 0 };
-    } else if (c.concentration.active) {
-      c.concentration.active = false;
-      toast(`${c.name} drops to 0 HP and loses concentration.`);
-    }
+  /** Damage from the card controls. Returns a short summary for the toast. */
+  function damageCombatant(c, amount, { crit = false } = {}) {
+    const { result, events } = R.applyDamage(c, amount, { crit });
+    const parts = [`${c.name} takes ${amount}`];
+    if (result.absorbedByTemp) parts.push(`${result.absorbedByTemp} absorbed by temp HP`);
+    if (result.overflow && c.type === "pc" && !result.instantDeath && result.droppedToZero) parts.push(`${result.overflow} overflow`);
+    toast(parts.join(", ") + ".");
+    announce(events);
   }
 
-  /** Roll a d6 for each spent recharge ability; a roll ≥ min recharges it. */
-  function rollRecharges(c) {
-    (c?.recharges || []).forEach((r) => {
-      if (r.available) return;
-      const roll = rollD6();
-      r.lastRoll = roll;
-      r.available = roll >= r.min;
-      toast(`${c.name}: ${r.name} ${r.available ? "recharged" : "not recharged"} (rolled ${roll})`);
-    });
+  function healCombatant(c, amount) {
+    if (R.isDead(c)) {
+      toast(`${c.name} is dead. Healing has no effect; set HP directly if they are revived.`);
+      return false;
+    }
+    const { result, events } = R.applyHealing(c, amount);
+    toast(result.healed
+      ? `${c.name} regains ${result.healed} HP${result.healed < amount ? ` (capped at max ${c.hp.max})` : ""}.`
+      : `${c.name} is already at max HP.`);
+    announce(events);
+    return true;
+  }
+
+  function grantTemp(c, amount) {
+    const r = R.grantTempHp(c, amount);
+    toast(r.applied
+      ? `${c.name} gains ${r.value} temp HP.`
+      : `${c.name} keeps ${r.previous} temp HP; the new ${r.value} was ignored (temp HP doesn't stack).`);
+    return r.applied;
   }
 
   /* ---------- Encounter clock ---------- */
@@ -458,48 +218,16 @@
     if (!enc.combatants.length) return;
     // The first Next Turn of a fresh encounter starts the clock.
     if (!clockRunning(enc) && enc.clock.elapsedMs === 0) startClock(enc);
-    enc.currentTurnIndex += 1;
-    if (enc.currentTurnIndex >= enc.combatants.length) {
-      enc.currentTurnIndex = 0;
-      enc.round += 1;
-      roundBump = true;
-    }
-    rollRecharges(enc.combatants[enc.currentTurnIndex]);
+    const { events, newRound } = R.nextTurn(enc);
+    if (newRound) roundBump = true;
+    announce(events);
   }
 
   function prevTurn(enc) {
-    if (!enc.combatants.length) return;
-    enc.currentTurnIndex -= 1;
-    if (enc.currentTurnIndex < 0) {
-      enc.currentTurnIndex = enc.combatants.length - 1;
-      if (enc.round > 1) { enc.round -= 1; roundBump = true; }
-    }
+    if (R.prevTurn(enc).newRound) roundBump = true;
   }
 
   let roundBump = false;
-
-  /**
-   * Lazy Encounter Benchmark (Sly Flourish): a fight may be deadly when the
-   * total enemy CR exceeds ¼ of total PC levels (½ once PCs are 5th level+).
-   * A single monster may be deadly when its CR exceeds ½ the PC level
-   * (the full PC level at 5th+).
-   */
-  function encounterDifficulty(enc) {
-    const pcs = enc.combatants.filter((c) => c.type === "pc");
-    const enemies = enc.combatants.filter((c) => c.type === "enemy");
-    if (!pcs.length || !enemies.length) return null;
-
-    const totalLevels = pcs.reduce((sum, c) => sum + toInt(c.level, 1), 0);
-    const avgLevel = totalLevels / pcs.length;
-    const highTier = avgLevel >= 5;
-    const benchmark = totalLevels * (highTier ? 0.5 : 0.25);
-    const totalCr = enemies.reduce((sum, c) => sum + parseCr(c.cr), 0);
-    const singleCap = highTier ? avgLevel : avgLevel / 2;
-    const bigMonsters = enemies.filter((c) => parseCr(c.cr) > singleCap);
-    const ratio = benchmark > 0 ? totalCr / benchmark : Infinity;
-    const tier = ratio > 1 ? "deadly" : ratio > 0.75 ? "approaching" : "under";
-    return { totalCr, benchmark, totalLevels, avgLevel, singleCap, bigMonsters, tier };
-  }
 
   /* ======================================================================
      4. Rendering
@@ -587,10 +315,15 @@
     if (hasCombatants) {
       const cur = enc.combatants[enc.currentTurnIndex];
       const next = enc.combatants[(enc.currentTurnIndex + 1) % enc.combatants.length];
+      const status = vitalStatus(cur);
+      const unconscious = cur.type !== "lair" && R.hasCondition(cur, "Unconscious") && status?.key !== "dead";
+      const note = status?.key === "dead" ? "Dead"
+        : [status && status.key !== "unconscious" ? status.label : "", unconscious ? "Unconscious" : ""].filter(Boolean).join(" · ");
       banner.classList.toggle("is-pc", cur.type === "pc");
       banner.innerHTML = `
         <span>Now acting:</span>
         <strong>${escapeHtml(cur.name)}</strong>
+        ${note ? `<span class="turn-note turn-note--${status?.key || "unconscious"}">${escapeHtml(note)}</span>` : ""}
         <span class="turn-tag">Up next · ${escapeHtml(next.name)}</span>`;
     } else {
       banner.innerHTML = "";
@@ -627,20 +360,21 @@
 
   function renderDifficulty(enc) {
     const el = $("#difficulty");
-    const d = encounterDifficulty(enc);
+    const d = R.encounterDifficulty(enc);
     el.classList.toggle("hidden", !d);
     if (!d) return;
-    const label = { under: "Under benchmark", approaching: "Approaching", deadly: "Potentially deadly" }[d.tier];
+    const label = { under: "Under benchmark", approaching: "Approaching", over: "Over benchmark" }[d.tier];
     el.className = `difficulty difficulty--${d.tier}`;
     el.innerHTML = `
-      <span class="difficulty-label">Difficulty</span>
+      <span class="difficulty-label">Benchmark</span>
       <span>CR <b>${formatNum(d.totalCr)}</b> / ${formatNum(d.benchmark)}</span>
       <span class="difficulty-tier">${label}</span>
-      ${d.bigMonsters.length ? `<span class="difficulty-warn">⚠ ${d.bigMonsters.map((c) => escapeHtml(c.name)).join(", ")}</span>` : ""}`;
+      ${d.dominant ? `<span class="difficulty-warn">Hint: ${escapeHtml(d.dominant.name.replace(/\s+\d+$/, ""))} may be a lot on its own</span>` : ""}`;
     el.title =
-      `Lazy Encounter Benchmark: total enemy CR ${formatNum(d.totalCr)} vs. benchmark ${formatNum(d.benchmark)} ` +
-      `(${d.avgLevel >= 5 ? "½" : "¼"} of ${d.totalLevels} total PC levels).` +
-      (d.bigMonsters.length ? `\nSingle monsters above CR ${formatNum(d.singleCap)} may be deadly on their own.` : "");
+      `Lazy Encounter Benchmark (Sly Flourish): a rough heuristic, not the DMG XP budget.\n` +
+      `Total enemy CR ${formatNum(d.totalCr)} vs. benchmark ${formatNum(d.benchmark)} ` +
+      `(${d.avgLevel >= 5 ? "½" : "¼"} of ${d.totalLevels} total PC levels). Over the benchmark, the fight may be deadly.` +
+      (d.dominant ? `\nHint: one monster type is above CR ${formatNum(d.singleCap)} and may be deadly by itself.` : "");
   }
 
   /* ---------- Card fragments (shared with the detail modal) ---------- */
@@ -650,14 +384,37 @@
     return ["Enemy", c.cr ? `CR ${c.cr}` : ""].filter(Boolean).join(" · ");
   }
 
+  /** Dead, Stable, Dying (PCs) or Down (monsters), or null when standing. */
+  function vitalStatus(c) {
+    if (c.type === "lair") return null;
+    if (R.isDead(c)) return { key: "dead", label: "Dead" };
+    if (c.hp.current > 0) return null;
+    if (c.type !== "pc") return { key: "down", label: "Down" };
+    if (R.isStable(c)) return { key: "stable", label: "Stable" };
+    return { key: "dying", label: "Dying" };
+  }
+
+  const exhaustionTitle = (level) =>
+    R.exhaustionEffects(level).map((e, i) => `${i + 1}: ${e}`).join("\n");
+
   function statusChipsHtml(c) {
     const chips = [];
     if (c.concentration?.active) {
       chips.push(`<span class="chip chip--conc" title="Concentrating">◉ ${escapeHtml(c.concentration.spell || "Concentrating")}</span>`);
     }
-    (c.conditions || []).forEach((cond) => chips.push(`<span class="chip chip--cond">${cond}</span>`));
-    if (c.exhaustion) chips.push(`<span class="chip chip--exh">Exhaustion ${c.exhaustion}</span>`);
-    return chips.length ? `<div class="card-status">${chips.join("")}</div>` : "";
+    (c.conditions || []).forEach((cond) =>
+      chips.push(`<span class="chip chip--cond" title="${escapeHtml(CONDITION_EFFECTS[cond] || "")}">${cond}</span>`));
+    if (c.exhaustion) {
+      chips.push(`<span class="chip chip--exh" title="${escapeHtml(`Exhaustion (cumulative)\n${exhaustionTitle(c.exhaustion)}`)}">Exhaustion ${c.exhaustion}</span>`);
+    }
+    const check = c.concentrationCheck;
+    const banner = check && c.concentration?.active ? `
+      <div class="conc-check" role="status">
+        <span>Concentration save <b>DC ${check.dc}</b>${check.count > 1 ? ` <small>×${check.count} saves</small>` : ""}</span>
+        <button class="icon-btn conc-check-dismiss" type="button" data-action="dismiss-conc-check"
+                title="Dismiss" aria-label="Dismiss concentration save reminder">×</button>
+      </div>` : "";
+    return (chips.length ? `<div class="card-status">${chips.join("")}</div>` : "") + banner;
   }
 
   function deathSavesHtml(c) {
@@ -666,8 +423,9 @@
       <button class="pip pip--${kind} ${i < ds[kind] ? "is-full" : ""}" type="button"
               data-action="death-save" data-kind="${kind}" data-index="${i}"
               aria-label="Death save ${kind} ${i + 1}"></button>`).join("");
-    const status = ds.fail >= 3 ? `<span class="ds-status ds-status--dead">Dead</span>`
-      : ds.success >= 3 ? `<span class="ds-status ds-status--stable">Stable</span>` : "";
+    const vs = vitalStatus(c);
+    const status = vs && ["dead", "stable"].includes(vs.key)
+      ? `<span class="ds-status ds-status--${vs.key}">${vs.label}</span>` : "";
     return `
       <div class="death-saves">
         <span class="ds-label">Death Saves</span>
@@ -685,7 +443,7 @@
         <div class="spell-rows-card">
           ${c.spellSlots.map((s, idx) => `
             <div class="spell-row-card">
-              <span class="spell-level">${ordinal(s.level)}</span>
+              <span class="spell-level">${ordinal(s.level)}${s.recovery === "short" ? ` <abbr class="spell-recovery" title="Recovers on a short rest">SR</abbr>` : ""}</span>
               <div class="spell-pips">
                 ${Array.from({ length: s.max }, (_, p) => `
                   <button class="pip ${p < s.current ? "is-full" : ""}" type="button"
@@ -732,7 +490,7 @@
         <div class="card-title-wrap">
           <h3 class="card-name" title="${escapeHtml(c.name)}">${escapeHtml(c.name)}</h3>
           <span class="card-type">${escapeHtml(subtitleFor(c))}</span>
-          ${c.type !== "lair" && c.hp.current <= 0 ? `<span class="card-down-tag">Down</span>` : ""}
+          ${(() => { const vs = vitalStatus(c); return vs ? `<span class="card-down-tag card-down-tag--${vs.key}">${vs.label}</span>` : ""; })()}
         </div>
         <div class="card-tools">
           <button class="icon-btn" type="button" data-action="open-detail" title="Open details" aria-label="Open details">${ICON_EXPAND}</button>
@@ -773,11 +531,11 @@
 
     const info = [];
     if (c.speed) info.push(`<span><b>Speed</b> ${escapeHtml(c.speed)}</span>`);
-    if (isPc) info.push(`<span><b>Init</b> ${formatMod(initBonusOf(c))}</span>`);
+    info.push(`<span><b>Init</b> ${formatMod(initBonusOf(c))}</span>`);
     const skills = isPc ? "" : skillsText(c);
 
     return `
-      <article class="card card--${c.type} ${isCurrent ? "is-current" : ""} ${isDown ? "is-down" : ""}"
+      <article class="card card--${c.type} ${isCurrent ? "is-current" : ""} ${isDown ? "is-down" : ""} ${R.isDead(c) ? "is-dead" : ""}"
                data-instance-id="${c.instanceId}">
         ${cardHeadHtml(c, `<button class="icon-btn" type="button" data-action="edit-instance" title="Edit stat block" aria-label="Edit">${ICON_EDIT}</button>`)}
 
@@ -815,9 +573,17 @@
             ${temp ? `<div class="hp-bar-temp" style="width:${(temp / scale) * 100}%"></div>` : ""}
           </div>
           <div class="hp-adjust">
-            <button class="hp-adj-btn hp-adj-btn--dmg" type="button" data-action="damage" title="Apply damage (1 if blank)">−</button>
-            <input type="number" min="0" placeholder="1" data-field="hpDelta" aria-label="Damage or healing amount">
-            <button class="hp-adj-btn hp-adj-btn--heal" type="button" data-action="heal" title="Apply healing (1 if blank)">+</button>
+            <input type="number" min="0" placeholder="1" data-field="hpDelta"
+                   aria-label="Damage, healing or temp HP amount" title="Enter applies damage, Shift+Enter heals">
+            ${isPc && isDown && !R.isDead(c) ? `
+              <label class="crit-toggle" title="Damage at 0 HP from a critical hit counts as two death save failures">
+                <input type="checkbox" data-field="crit"> Crit
+              </label>` : ""}
+          </div>
+          <div class="hp-adjust-btns">
+            <button class="hp-adj-btn hp-adj-btn--dmg" type="button" data-action="damage" title="Apply damage, 1 if blank (Enter)">Damage</button>
+            <button class="hp-adj-btn hp-adj-btn--heal" type="button" data-action="heal" title="Apply healing, 1 if blank (Shift+Enter). Caps at max HP.">Heal</button>
+            <button class="hp-adj-btn hp-adj-btn--temp" type="button" data-action="temp" title="Grant temporary HP. Keeps the higher value; temp HP doesn't stack.">Temp</button>
           </div>
         </div>
 
@@ -952,7 +718,7 @@
   const abilityOptions = (selected) =>
     STAT_KEYS.map((k) => `<option value="${k}" ${k === selected ? "selected" : ""}>${k.toUpperCase()}</option>`).join("");
 
-  function spellRowHtml(slot = { level: 1, current: 0, max: 0 }) {
+  function spellRowHtml(slot = { level: 1, current: 0, max: 0, recovery: "long" }) {
     return `
       <div class="spell-row" data-row>
         <label class="field"><span class="field-label">Level</span>
@@ -961,6 +727,11 @@
           <input type="number" min="0" data-spell="current" value="${toInt(slot.current, 0)}"></label>
         <label class="field"><span class="field-label">Max</span>
           <input type="number" min="0" data-spell="max" value="${toInt(slot.max, 0)}"></label>
+        <label class="field"><span class="field-label">Recovers on</span>
+          <select data-spell="recovery" title="Warlock Pact Magic slots recover on a short rest">
+            <option value="long" ${slot.recovery !== "short" ? "selected" : ""}>Long rest</option>
+            <option value="short" ${slot.recovery === "short" ? "selected" : ""}>Short rest</option>
+          </select></label>
         <button class="icon-btn icon-btn--danger" type="button" data-action="remove-row" title="Remove level" aria-label="Remove level">×</button>
       </div>`;
   }
@@ -1035,7 +806,7 @@
     STAT_KEYS.forEach((k) => { f[k].value = block.stats[k]; });
 
     f.level.value = block.level ?? 1;
-    f.initBonus.value = data.initBonus ?? "";
+    f.initBonus.value = block.initBonus ?? "";
     f.cls.value = block.cls ?? "";
     f.race.value = block.race ?? "";
 
@@ -1085,6 +856,7 @@
         level: $('[data-spell="level"]', row).value,
         current: $('[data-spell="current"]', row).value,
         max: $('[data-spell="max"]', row).value,
+        recovery: $('[data-spell="recovery"]', row).value,
       })),
     };
     STAT_KEYS.forEach((k) => { values[k] = f[k].value; });
@@ -1198,7 +970,7 @@
   $("#btn-add-spell-level").addEventListener("click", () => {
     const existing = $$('[data-spell="level"]', $("#spell-rows")).map((i) => toInt(i.value, 0));
     const nextLevel = clamp((existing.length ? Math.max(...existing) : 0) + 1, 1, 9);
-    addRow("#spell-rows", spellRowHtml({ level: nextLevel, current: 1, max: 1 }), '[data-spell="max"]');
+    addRow("#spell-rows", spellRowHtml({ level: nextLevel, current: 1, max: 1, recovery: "long" }), '[data-spell="max"]');
   });
   $("#btn-add-attack").addEventListener("click", () =>
     addRow("#attack-rows", attackRowHtml(), '[data-atk="name"]'));
@@ -1272,8 +1044,9 @@
       ["HP", `${c.hp.current}/${c.hp.max}${c.hp.temp ? ` <small>+${c.hp.temp} temp</small>` : ""}`],
       ["Speed", escapeHtml(c.speed || "—")],
       ["Initiative", toInt(c.initiative, 0)],
-      isPc ? ["Init Bonus", formatMod(initBonusOf(c))] : ["CR", c.cr ? `${c.cr} <small>prof ${formatMod(profFromCr(c.cr))}</small>` : "—"],
-    ].map(([label, value]) => `
+      ["Init Bonus", `${formatMod(initBonusOf(c))}${c.initBonus === null ? " <small>DEX</small>" : ""}`],
+      isPc ? null : ["CR", c.cr ? `${c.cr} <small>prof ${formatMod(profFromCr(c.cr))}</small>` : "—"],
+    ].filter(Boolean).map(([label, value]) => `
       <div class="detail-stat"><span class="detail-stat-label">${label}</span><span class="detail-stat-value">${value}</span></div>`).join("");
 
     const abilities = STAT_KEYS.map((k) => {
@@ -1288,8 +1061,17 @@
 
     const conditions = CONDITIONS.map((cond) => `
       <button class="chip chip--toggle ${c.conditions.includes(cond) ? "is-on" : ""}" type="button"
-              data-action="toggle-condition" data-condition="${cond}" aria-pressed="${c.conditions.includes(cond)}">${cond}</button>`).join("");
-
+              data-action="toggle-condition" data-condition="${cond}" aria-pressed="${c.conditions.includes(cond)}"
+              title="${escapeHtml(CONDITION_EFFECTS[cond])}">${cond}</button>`).join("");
+    const activeEffects = c.conditions.length ? `
+      <ul class="effect-list">
+        ${c.conditions.map((cond) => `<li><b>${cond}</b> ${escapeHtml(CONDITION_EFFECTS[cond])}</li>`).join("")}
+      </ul>` : "";
+    const exhaustionEffects = c.exhaustion ? `
+      <ul class="effect-list effect-list--exh">
+        ${R.exhaustionEffects(c.exhaustion).map((e, i) => `<li><b>Level ${i + 1}</b> ${escapeHtml(e)}${i === 3 ? " <small>(not applied automatically)</small>" : ""}</li>`).join("")}
+      </ul>` : "";
+    const check = c.concentrationCheck;
     const recharges = c.recharges?.length ? c.recharges.map((r, i) => `
       <div class="recharge-item ${r.available ? "is-ready" : "is-spent"}">
         <span class="recharge-name">${escapeHtml(r.name)} <small>Recharge ${rechargeLabel(r.min)}</small></span>
@@ -1326,12 +1108,14 @@
           <section class="detail-section">
             <h3 class="detail-section-title">Conditions</h3>
             <div class="chip-grid">${conditions}</div>
+            ${activeEffects}
             <div class="exhaustion">
               <span class="field-label">Exhaustion</span>
               <button class="icon-btn" type="button" data-action="exhaustion" data-delta="-1" aria-label="Decrease exhaustion">−</button>
               <span class="exhaustion-value ${c.exhaustion ? "is-on" : ""}">${c.exhaustion}</span>
               <button class="icon-btn" type="button" data-action="exhaustion" data-delta="1" aria-label="Increase exhaustion">+</button>
             </div>
+            ${exhaustionEffects}
           </section>
         </div>
 
@@ -1346,6 +1130,12 @@
               <input type="text" data-detail-field="concentrationSpell" value="${escapeHtml(c.concentration.spell)}"
                      placeholder="Spell name" autocomplete="off" aria-label="Concentration spell">
             </div>
+            ${check && c.concentration.active ? `
+              <div class="conc-check" role="status">
+                <span>Concentration save <b>DC ${check.dc}</b>${check.count > 1 ? ` <small>×${check.count} saves</small>` : ""}</span>
+                <button class="btn btn-ghost btn-sm" type="button" data-action="dismiss-conc-check">Dismiss</button>
+              </div>` : ""}
+            <p class="detail-hint">DC is 10 or half the damage taken, whichever is higher. One save per damage source.</p>
           </section>
 
           ${isPc ? `
@@ -1393,28 +1183,29 @@
       case "roll-recharge": {
         const r = c.recharges?.[toInt(btn.dataset.rechargeIndex, -1)];
         if (!r || r.available) return false;
-        const roll = rollD6();
-        r.lastRoll = roll;
-        r.available = roll >= r.min;
-        toast(`${c.name}: ${r.name} ${r.available ? "recharged" : "not recharged"} (rolled ${roll})`);
+        announce(R.rollRecharges({ name: c.name, recharges: [r] }));
         return true;
       }
-      case "toggle-condition": {
-        const cond = btn.dataset.condition;
-        c.conditions = c.conditions.includes(cond)
-          ? c.conditions.filter((x) => x !== cond)
-          : CONDITIONS.filter((x) => x === cond || c.conditions.includes(x));
+      case "toggle-condition":
+        announce(R.toggleCondition(c, btn.dataset.condition));
         return true;
-      }
-      case "exhaustion":
+      case "exhaustion": {
+        const before = c.exhaustion;
         c.exhaustion = clamp(c.exhaustion + toInt(btn.dataset.delta, 0), 0, 6);
-        return true;
+        if (c.exhaustion === 6 && before < 6) toast(`${c.name} reaches exhaustion level 6 and dies.`);
+        return c.exhaustion !== before;
+      }
       case "toggle-concentration":
         c.concentration.active = !c.concentration.active;
+        if (!c.concentration.active) c.concentrationCheck = null;
+        return true;
+      case "dismiss-conc-check":
+        c.concentrationCheck = null;
         return true;
     }
     return false;
   }
+
 
   $("#detail-body").addEventListener("click", (e) => {
     const btn = e.target.closest("[data-action]");
@@ -1642,18 +1433,18 @@
 
     switch (btn.dataset.action) {
       case "damage":
-      case "heal": {
+      case "heal":
+      case "temp": {
         const input = $('[data-field="hpDelta"]', el);
         const amount = Math.abs(toInt(input.value, 0)) || 1;
-        if (btn.dataset.action === "damage") {
-          adjustHp(combatant, -amount);
-          if (combatant.concentration.active && combatant.hp.current > 0) {
-            toast(`${combatant.name}: concentration save, DC ${clamp(Math.floor(amount / 2), 10, 30)}`);
-          }
-        } else {
-          adjustHp(combatant, amount);
+        const action = btn.dataset.action;
+        if (action === "damage") {
+          damageCombatant(combatant, amount, { crit: !!$('[data-field="crit"]', el)?.checked });
+        } else if (action === "heal") {
+          if (!healCombatant(combatant, amount)) return;
+        } else if (!grantTemp(combatant, amount)) {
+          return;
         }
-        afterHpChange(combatant);
         commit();
         break;
       }
@@ -1701,14 +1492,15 @@
         commit();
         break;
       case "hpCurrent":
-        combatant.hp.current = Math.max(0, toInt(input.value, 0));
-        afterHpChange(combatant);
+        // Direct edits are corrections, so they bypass massive damage and death save rules.
+        combatant.hp.current = Math.min(Math.max(0, toInt(input.value, 0)), combatant.hp.max);
+        announce(R.afterHpChange(combatant));
         commit();
         break;
       case "hpMax":
         combatant.hp.max = Math.max(0, toInt(input.value, 0));
         combatant.hp.current = Math.min(combatant.hp.current, combatant.hp.max);
-        afterHpChange(combatant);
+        announce(R.afterHpChange(combatant));
         commit();
         break;
       case "hpTemp":

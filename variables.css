@@ -40,8 +40,10 @@
   --blue-glow-strong: rgba(100, 181, 246, 0.55);
   --blue-glow-soft: rgba(100, 181, 246, 0.2);
   --blue-tint: #1d2733; /* current-turn PC card background */
+  --green-glow-soft: rgba(67, 160, 71, 0.18);
   --cyan-400: #4dd0e1; /* temporary HP */
   --cyan-glow: rgba(77, 208, 225, 0.45);
+  --cyan-glow-soft: rgba(77, 208, 225, 0.14);
   --purple-300: #ce93d8; /* concentration */
   --purple-glow-soft: rgba(206, 147, 216, 0.16);
 
@@ -78,6 +80,7 @@
   --tracking-display: 0.06em;
 
   /* ---------- Spacing ---------- */
+  --sp-05: 0.125rem;
   --sp-1: 0.25rem;
   --sp-2: 0.5rem;
   --sp-3: 0.75rem;
@@ -116,4 +119,5 @@
   --app-max: 1480px;
   --topbar-h: 72px;
   --card-min: 300px;
+  --touch-target: 40px; /* minimum height for primary card controls */
 }

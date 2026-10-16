@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DM Dashboard: rules tests</title>
+    <link rel="stylesheet" href="../variables.css" />
+    <style>
+      body {
+        margin: 0;
+        padding: var(--sp-6);
+        background: var(--bg-1);
+        color: var(--text-0);
+        font-family: var(--font-body);
+      }
+      h1 {
+        font-family: var(--font-display);
+        font-size: var(--fs-xl);
+      }
+      ol {
+        padding-left: var(--sp-5);
+      }
+      li {
+        margin: var(--sp-1) 0;
+      }
+      .ok {
+        color: var(--green-300);
+      }
+      .fail {
+        color: var(--red-200);
+      }
+      pre {
+        margin: var(--sp-1) 0 0;
+        color: var(--text-1);
+        white-space: pre-wrap;
+      }
+    </style>
+  </head>
+  <body>
+    <h1 id="summary">Running…</h1>
+    <ol id="results"></ol>
+    <script src="../rules.js"></script>
+    <script src="fixtures/v1-save.js"></script>
+    <script src="rules.test.js"></script>
+    <script>
+      const results = window.TEST_RESULTS || [];
+      const failed = results.filter((r) => !r.ok).length;
+      document.getElementById("summary").textContent =
+        `${results.length - failed}/${results.length} passed`;
+      document.getElementById("summary").className = failed ? "fail" : "ok";
+      const list = document.getElementById("results");
+      results.forEach((r) => {
+        const li = document.createElement("li");
+        li.className = r.ok ? "ok" : "fail";
+        li.textContent = `${r.ok ? "✓" : "✗"} ${r.name}`;
+        if (!r.ok) {
+          const pre = document.createElement("pre");
+          pre.textContent = r.message;
+          li.appendChild(pre);
+        }
+        list.appendChild(li);
+      });
+    </script>
+  </body>
+</html>

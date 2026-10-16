@@ -609,6 +609,28 @@ input[type="number"]::-webkit-inner-spin-button {
   color: var(--text-0);
   letter-spacing: 0.03em;
 }
+.turn-note {
+  padding: var(--sp-05) var(--sp-2);
+  border-radius: var(--r-pill);
+  border: 1px solid var(--amber-500);
+  background: var(--amber-glow-soft);
+  color: var(--amber-300);
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+}
+.turn-note--stable {
+  border-color: var(--green-500);
+  background: var(--green-glow-soft);
+  color: var(--green-300);
+}
+.turn-note--dead,
+.turn-note--down {
+  border-color: var(--red-300);
+  background: var(--bg-0);
+  color: var(--text-0);
+}
 .turn-banner .turn-tag {
   margin-left: auto;
   color: var(--text-2);
@@ -823,6 +845,26 @@ input[type="number"]::-webkit-inner-spin-button {
   text-transform: uppercase;
   vertical-align: middle;
 }
+.card-down-tag--dying {
+  background: var(--amber-glow-soft);
+  color: var(--amber-300);
+}
+.card-down-tag--stable {
+  background: var(--green-glow-soft);
+  color: var(--green-300);
+}
+.card-down-tag--dead {
+  background: var(--bg-0);
+  border: 1px solid var(--red-300);
+  color: var(--text-0);
+}
+.card-down-tag--dead::before {
+  content: "✝ ";
+}
+.card.is-dead {
+  opacity: 0.45;
+  filter: grayscale(0.85);
+}
 
 .card-tools {
   display: flex;
@@ -981,27 +1023,101 @@ input[type="number"]::-webkit-inner-spin-button {
   color: var(--text-3);
   font-weight: 400;
 }
+.hp-adjust-btns {
+  display: grid;
+  grid-template-columns: 1.2fr 1fr 0.8fr;
+  gap: var(--sp-1);
+  margin-top: var(--sp-1);
+}
 .hp-adj-btn {
-  width: 36px;
+  min-height: var(--touch-target);
+  padding: 0 var(--sp-2);
   border-radius: var(--r-sm);
   border: 1px solid var(--border-mid);
   background: var(--bg-3);
   font-weight: 700;
-  font-size: var(--fs-md);
+  font-size: var(--fs-sm);
+  letter-spacing: 0.02em;
   transition:
     background var(--dur-fast),
     border-color var(--dur-fast),
     color var(--dur-fast);
 }
+.hp-adj-btn:focus-visible {
+  outline: 2px solid var(--red-300);
+  outline-offset: 2px;
+}
+.hp-adj-btn--dmg {
+  border-color: var(--red-700);
+  color: var(--red-200);
+}
 .hp-adj-btn--dmg:hover {
   background: var(--red-900);
   border-color: var(--red-500);
-  color: var(--red-200);
+}
+.hp-adj-btn--heal {
+  border-color: var(--green-500);
+  color: var(--green-300);
 }
 .hp-adj-btn--heal:hover {
-  background: rgba(67, 160, 71, 0.18);
-  border-color: var(--green-500);
-  color: #a5d6a7;
+  background: var(--green-glow-soft);
+}
+.hp-adj-btn--temp {
+  border-color: var(--cyan-400);
+  color: var(--cyan-400);
+}
+.hp-adj-btn--temp:hover {
+  background: var(--cyan-glow-soft);
+}
+
+.crit-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: 0 var(--sp-2);
+  border-radius: var(--r-sm);
+  border: 1px solid var(--red-700);
+  color: var(--red-200);
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.crit-toggle input {
+  accent-color: var(--red-400);
+}
+.crit-toggle:has(input:checked) {
+  background: var(--red-900);
+  border-color: var(--red-300);
+}
+
+/* Persistent concentration save reminder (card + detail) */
+.conc-check {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-1) var(--sp-1) var(--sp-1) var(--sp-3);
+  border-radius: var(--r-sm);
+  border: 1px solid var(--purple-300);
+  background: var(--purple-glow-soft);
+  color: var(--purple-300);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+}
+.conc-check b {
+  color: var(--text-0);
+}
+.conc-check small {
+  color: var(--purple-300);
+}
+.conc-check > span {
+  flex: 1;
+}
+.conc-check-dismiss {
+  width: 24px;
+  height: 24px;
+  color: var(--purple-300);
 }
 
 /* AC + stats row */
@@ -1117,6 +1233,11 @@ input[type="number"]::-webkit-inner-spin-button {
   font-weight: 700;
   color: var(--text-2);
   letter-spacing: 0.04em;
+}
+.spell-recovery {
+  color: var(--blue-300);
+  text-decoration: none;
+  cursor: help;
 }
 .spell-pips {
   display: flex;
@@ -1463,7 +1584,7 @@ input[type="number"]::-webkit-inner-spin-button {
 }
 .spell-row {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr auto;
+  grid-template-columns: 1fr 1fr 1fr 1.4fr auto;
   gap: var(--sp-2);
   align-items: end;
 }
@@ -2066,6 +2187,24 @@ button.chip {
 }
 .exhaustion-value.is-on {
   color: var(--amber-300);
+}
+
+.effect-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  color: var(--text-1);
+  font-size: var(--fs-xs);
+}
+.effect-list b {
+  color: var(--amber-300);
+  margin-right: var(--sp-1);
+}
+.effect-list small {
+  color: var(--text-2);
 }
 
 .concentration {
