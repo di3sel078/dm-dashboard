@@ -181,8 +181,16 @@
   }
 
   /* ---------- HP ---------- */
+  /** Tell screen readers when a creature crosses an HP band (Hurt, Bloodied, Down…). */
+  function sayHpBand(c, before) {
+    const after = hpStateLabel(c);
+    if (after !== before) liveSay(`${c.name} is now ${after}, ${c.hp.current} of ${c.hp.max} HP.`);
+  }
+
   function damageCombatant(c, amount, { crit = false, type = "" } = {}) {
+    const band = hpStateLabel(c);
     const r = R.applyDamage(c, amount, { crit, type });
+    sayHpBand(c, band);
     const parts = [`${c.name} takes ${r.amount}${r.defense ? ` (${r.note})` : type ? ` ${type}` : ""}`];
     if (r.result.absorbedByTemp) parts.push(`${r.result.absorbedByTemp} absorbed by temp HP`);
     if (crit) parts.push("critical hit");
@@ -197,7 +205,9 @@
       toast(`${c.name} is dead. Healing has no effect; set HP directly if they are revived.`);
       return false;
     }
+    const band = hpStateLabel(c);
     const { result, events } = R.applyHealing(c, amount);
+    sayHpBand(c, band);
     const summary = result.healed
       ? `${c.name} regains ${result.healed} HP${result.healed < amount ? ` (capped at max ${c.hp.max})` : ""}.`
       : `${c.name} is already at max HP.`;
@@ -391,6 +401,7 @@
     $("#btn-delay").disabled = enc.currentTurnIndex >= enc.combatants.length - 1 || enc.combatants[enc.currentTurnIndex]?.type === "lair";
     $("#btn-roll-init").disabled = !enc.combatants.some((c) => c.type === "enemy");
     $("#opt-group-init").checked = state.ui.groupInitiative;
+    $$("[data-card-mode]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.cardMode === state.ui.cardMode)));
 
     const count = enc.combatants.length;
     $("#tracker-count").textContent = count ? `${count} in initiative order` : "";
@@ -407,6 +418,7 @@
         </div>`;
       return;
     }
+    grid.classList.toggle("is-compact", state.ui.cardMode === "compact");
     const refocus = focusKey(grid);
     const seen = seenCards.get(enc.id) || new Set();
     const firstPaint = !seenCards.has(enc.id);
@@ -865,7 +877,73 @@
     });
     $$("[data-close]", dialog).forEach((btn) =>
       btn.addEventListener("click", () => dialog.close("cancel")));
+    dialog.addEventListener("close", () => restoreFocus(dialog));
   }
+
+  /* ---------- Focus: remember the opener, trap Tab inside, restore on close ---------- */
+  const openers = new WeakMap();
+
+  /** A selector that finds an equivalent element after a full re-render replaced it. */
+  function describeFocus(el) {
+    if (!el || el === document.body) return null;
+    if (el.id) return `#${el.id}`;
+    const host = el.closest("[data-instance-id], [data-encounter-id], [data-template-id]");
+    const attrs = Object.entries(el.dataset)
+      .map(([k, v]) => `[data-${k.replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`)}="${String(v).replace(/"/g, '\\"')}"]`)
+      .join("");
+    if (!attrs) return null;
+    if (!host) return attrs;
+    const [key, value] = Object.entries(host.dataset).find(([k]) => /^(instanceId|encounterId|templateId)$/.test(k));
+    return `[data-${key.replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`)}="${value}"] ${attrs}`;
+  }
+
+  function openModal(dialog) {
+    const active = document.activeElement;
+    // Opening one dialog from another (detail → edit) hands the original opener along.
+    const parent = active?.closest?.("dialog[open]");
+    const opener = parent ? openers.get(parent) : { el: active, selector: describeFocus(active) };
+    openers.set(dialog, opener);
+    dialog.showModal();
+  }
+
+  function restoreFocus(dialog) {
+    const opener = openers.get(dialog);
+    openers.delete(dialog);
+    if (!opener) return;
+    requestAnimationFrame(() => {
+      if (document.querySelector("dialog[open]")) return;
+      const target = opener.el?.isConnected ? opener.el : (opener.selector && $(opener.selector));
+      target?.focus?.();
+    });
+  }
+
+  const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, [tabindex]:not([tabindex="-1"])';
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Tab") return;
+    const dialog = $$("dialog[open]").at(-1);
+    if (!dialog) return;
+    const items = $$(FOCUSABLE, dialog).filter((el) => el.offsetParent !== null || el === document.activeElement);
+    if (!items.length) return;
+    const first = items[0];
+    const last = items[items.length - 1];
+    if (e.shiftKey && (document.activeElement === first || !dialog.contains(document.activeElement))) {
+      e.preventDefault(); last.focus();
+    } else if (!e.shiftKey && (document.activeElement === last || !dialog.contains(document.activeElement))) {
+      e.preventDefault(); first.focus();
+    }
+  });
+
+  /* ---------- Screen reader announcements ---------- */
+  function liveSay(text) {
+    const el = $("#sr-live");
+    el.textContent = "";
+    // A fresh text node after a tick makes repeated messages announce again.
+    setTimeout(() => { el.textContent = text; }, 50);
+  }
+  const turnAnnouncement = (enc) => {
+    const c = enc.combatants[enc.currentTurnIndex];
+    return c ? `Round ${enc.round}, ${c.name}'s turn.` : "";
+  };
 
   /* ---------- Toast ---------- */
   const TOAST_MAX = 5;
@@ -905,7 +983,7 @@
       input.value = value;
       promptResult = null;
       promptModal.returnValue = "cancel";
-      promptModal.showModal();
+      openModal(promptModal);
       requestAnimationFrame(() => { input.focus(); input.select(); });
     });
   }
@@ -938,7 +1016,7 @@
       submit.className = `btn ${danger ? "btn-danger" : "btn-primary"}`;
       confirmModal.classList.toggle("modal-danger", danger);
       confirmModal.returnValue = "cancel";
-      confirmModal.showModal();
+      openModal(confirmModal);
       requestAnimationFrame(() => submit.focus());
     });
   }
@@ -975,7 +1053,7 @@
         choiceModal.close("ok");
       };
       choiceModal.returnValue = "cancel";
-      choiceModal.showModal();
+      openModal(choiceModal);
       requestAnimationFrame(() => $(".choice-btn", choiceModal)?.focus());
     });
   }
@@ -1238,7 +1316,7 @@
     if (ctx.mode === "instance-edit") seed = findCombatant(ctx.instanceId) || seed;
     fillCreatureForm(seed, ctx.type);
 
-    creatureModal.showModal();
+    openModal(creatureModal);
     requestAnimationFrame(() => creatureForm.elements.name.focus());
   }
 
@@ -1359,7 +1437,7 @@
 
   function openDetail(instanceId) {
     detailId = instanceId;
-    detailModal.showModal();
+    openModal(detailModal);
     renderDetail();
   }
 
@@ -1729,7 +1807,7 @@
     f.initiative.value = 0;
     f.count.value = 1;
     updatePickerInitLabel();
-    pickerModal.showModal();
+    openModal(pickerModal);
     requestAnimationFrame(() => (empty ? $("#picker-create-new") : select).focus());
   }
 
@@ -1823,10 +1901,12 @@
   $("#btn-next-turn").addEventListener("click", withEncounter((enc) => {
     nextTurn(enc);
     commit({ undo: "Next turn" });
+    liveSay(turnAnnouncement(enc));
   }));
   $("#btn-prev-turn").addEventListener("click", withEncounter((enc) => {
     prevTurn(enc);
     commit({ undo: "Previous turn" });
+    liveSay(turnAnnouncement(enc));
   }));
   $("#btn-delay").addEventListener("click", withEncounter(async (enc) => {
     const cur = enc.combatants[enc.currentTurnIndex];
@@ -1842,6 +1922,7 @@
     if (!events) return;
     announce(events, { enc });
     commit({ undo: `Delay ${cur.name}` });
+    liveSay(turnAnnouncement(enc));
   }));
 
   $("#btn-add-pc").addEventListener("click", () => openPicker("pc"));
@@ -1950,12 +2031,37 @@
     }
     if (e.ctrlKey || e.metaKey || e.altKey || isTyping()) return;
     const k = e.key.toLowerCase();
+    if (e.key === "?") { e.preventDefault(); openShortcuts(); return; }
     if (k === "d") { e.preventDefault(); toggleDice(); return; }
     if (state.ui.view !== "active") return;
     if (k === "l") { e.preventDefault(); toggleLog(); return; }
-    if (k === "n" || e.key === "ArrowRight") { e.preventDefault(); $("#btn-next-turn").click(); }
-    if (k === "p" || e.key === "ArrowLeft") { e.preventDefault(); $("#btn-prev-turn").click(); }
+    // Arrow keys scroll the page unless the DM opts in.
+    const arrows = state.ui.arrowKeys;
+    if (k === "n" || (arrows && e.key === "ArrowRight")) { e.preventDefault(); $("#btn-next-turn").click(); }
+    if (k === "p" || (arrows && e.key === "ArrowLeft")) { e.preventDefault(); $("#btn-prev-turn").click(); }
   });
+
+  /* ---------- Shortcuts dialog & card layout ---------- */
+  const shortcutsModal = $("#shortcuts-modal");
+  function openShortcuts() {
+    if (shortcutsModal.open) return;
+    $("#opt-arrow-keys").checked = state.ui.arrowKeys;
+    openModal(shortcutsModal);
+  }
+  $("#btn-shortcuts").addEventListener("click", openShortcuts);
+  $("#opt-arrow-keys").addEventListener("change", (e) => {
+    state.ui.arrowKeys = e.target.checked;
+    saveState();
+  });
+  wireDialogChrome(shortcutsModal);
+
+  $$("[data-card-mode]").forEach((btn) => btn.addEventListener("click", () => {
+    if (state.ui.cardMode === btn.dataset.cardMode) return;
+    state.ui.cardMode = btn.dataset.cardMode;
+    // Each layout has its own default for the stats section.
+    moreOpen.clear();
+    commit();
+  }));
 
   /* ---------- Combatant card actions ---------- */
   const cardsHost = $("#combatant-cards");

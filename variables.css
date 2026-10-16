@@ -1,7 +1,9 @@
 /* ==========================================================================
    DM Dashboard — Design Tokens
-   Every color, spacing unit, radius, font size and shadow lives here.
-   styles.css consumes these; it never hard-codes a value.
+   Every color, spacing unit, radius, font size, shadow and duration lives
+   here. styles.css consumes these; it never hard-codes a value.
+   Text colors are tuned for WCAG AA on the surfaces they sit on; see
+   docs/CONTRAST.md before changing any of them.
    ========================================================================== */
 
 :root {
@@ -11,6 +13,21 @@
   --bg-2: #222222; /* cards, panels */
   --bg-3: #2a2a2a; /* raised elements, inputs */
   --bg-4: #333333; /* hover on raised elements */
+  --bg-turn-enemy: #302020; /* current-turn enemy card background */
+  --bg-topbar-top: rgba(26, 26, 26, 0.96);
+  --bg-topbar-bottom: rgba(26, 26, 26, 0.88);
+  --bg-backdrop: rgba(8, 8, 8, 0.72); /* behind modals */
+  --bg-sunken: rgba(0, 0, 0, 0.15); /* modal footers, builder groups */
+  --bg-empty: rgba(255, 255, 255, 0.015);
+  --bg-hover-light: rgba(255, 255, 255, 0.06);
+
+  /* ---------- Shade (for shadows and insets) ---------- */
+  --shade-30: rgba(0, 0, 0, 0.3);
+  --shade-35: rgba(0, 0, 0, 0.35);
+  --shade-45: rgba(0, 0, 0, 0.45);
+  --shade-50: rgba(0, 0, 0, 0.5);
+  --shade-60: rgba(0, 0, 0, 0.6);
+  --highlight-inset: rgba(255, 255, 255, 0.04);
 
   /* ---------- Accent: blood red ---------- */
   --red-900: #4a0000;
@@ -20,18 +37,30 @@
   --red-500: #b71c1c;
   --red-400: #c62828;
   --red-300: #e53935;
-  --red-200: #ef5350;
+  --red-200: #f4736f; /* red text; lightened from #ef5350 for AA on raised surfaces */
   --red-glow: rgba(229, 57, 53, 0.55);
   --red-glow-soft: rgba(229, 57, 53, 0.22);
+  --red-wash: rgba(183, 28, 28, 0.15); /* outline-red hover */
+  --red-banner: rgba(198, 40, 40, 0.16); /* turn banner fade */
+  --red-ember: rgba(139, 0, 0, 0.35); /* topbar rule, primary button shadow */
+  --red-ember-soft: rgba(139, 0, 0, 0.25); /* tracker bar wash */
+  --red-vignette: rgba(139, 0, 0, 0.28);
+  --red-vignette-faint: rgba(139, 0, 0, 0.1);
 
   /* ---------- Secondary accents ---------- */
   --gold-500: #c9a227; /* ornaments, headings */
   --gold-400: #e0b93a;
   --gold-glow: rgba(224, 185, 58, 0.35);
+  --gold-wash: rgba(201, 162, 39, 0.12);
   --green-500: #43a047; /* healing, healthy HP */
-  --amber-500: #ffb300; /* wounded HP */
+  --green-400: #7cb342; /* healthy HP bar highlight */
   --green-300: #a5d6a7; /* positive modifiers, success pips */
+  --green-glow: rgba(67, 160, 71, 0.5);
+  --green-glow-soft: rgba(67, 160, 71, 0.18);
+  --amber-500: #ffb300; /* wounded HP */
+  --amber-400: #ffca28; /* wounded HP bar highlight */
   --amber-300: #ffd54f; /* conditions */
+  --amber-glow: rgba(255, 179, 0, 0.45);
   --amber-glow-soft: rgba(255, 179, 0, 0.14);
   --blue-300: #90caf9; /* PC turn highlight */
   --blue-400: #64b5f6; /* spell slots */
@@ -40,31 +69,36 @@
   --blue-glow-strong: rgba(100, 181, 246, 0.55);
   --blue-glow-soft: rgba(100, 181, 246, 0.2);
   --blue-tint: #1d2733; /* current-turn PC card background */
-  --green-glow-soft: rgba(67, 160, 71, 0.18);
   --cyan-400: #4dd0e1; /* temporary HP */
   --cyan-glow: rgba(77, 208, 225, 0.45);
   --cyan-glow-soft: rgba(77, 208, 225, 0.14);
   --purple-300: #ce93d8; /* concentration */
   --purple-glow-soft: rgba(206, 147, 216, 0.16);
+  --white-glow: rgba(255, 255, 255, 0.4);
 
   /* ---------- Text ---------- */
   --text-0: #f5f1ea; /* primary, warm off-white */
   --text-1: #d6d0c6; /* secondary */
-  --text-2: #a39d93; /* muted */
-  --text-3: #6f6a62; /* disabled / hints */
+  --text-2: #b3ada3; /* muted */
+  --text-3: #9a948b; /* hints, small labels (AA on bg-1 to bg-3) */
 
   /* ---------- Borders ---------- */
   --border-subtle: rgba(255, 255, 255, 0.07);
   --border-mid: rgba(255, 255, 255, 0.14);
   --border-light: rgba(245, 241, 234, 0.55);
   --border-red: var(--red-500);
+  --border-hairline: 1px;
+  --border-accent: 2px;
+  --border-bar: 3px;
+  --focus-ring: 2px;
 
   /* ---------- Typography ---------- */
   --font-display: "Cinzel", "Georgia", serif;
   --font-body: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: "SF Mono", "Menlo", "Consolas", monospace;
 
-  --fs-xs: 0.72rem;
+  --fs-2xs: 0.7rem; /* smallest allowed label size */
+  --fs-xs: 0.75rem;
   --fs-sm: 0.82rem;
   --fs-md: 0.95rem;
   --fs-lg: 1.1rem;
@@ -72,15 +106,25 @@
   --fs-2xl: 1.9rem;
   --fs-3xl: 2.6rem;
   --fs-hero: 4.2rem;
+  --fs-chev: 1.3em;
+
+  --fs-player-name: 1.9rem; /* player view: readable across a table */
+  --fs-player-meta: 1.25rem;
 
   --lh-tight: 1.15;
+  --lh-snug: 1.2;
+  --lh-chip: 1.4;
   --lh-normal: 1.5;
 
   --tracking-caps: 0.14em;
   --tracking-display: 0.06em;
+  --tracking-label: 0.08em;
+  --tracking-btn: 0.02em;
 
   /* ---------- Spacing ---------- */
+  --sp-px: 1px;
   --sp-05: 0.125rem;
+  --sp-075: 0.1875rem;
   --sp-1: 0.25rem;
   --sp-2: 0.5rem;
   --sp-3: 0.75rem;
@@ -91,22 +135,62 @@
   --sp-8: 4rem;
 
   /* ---------- Radius ---------- */
+  --r-xs: 2px;
   --r-sm: 6px;
   --r-md: 10px;
   --r-lg: 16px;
   --r-xl: 22px;
   --r-pill: 999px;
+  --r-round: 50%;
 
   /* ---------- Shadows ---------- */
-  --shadow-card: 0 10px 30px rgba(0, 0, 0, 0.45), 0 2px 6px rgba(0, 0, 0, 0.35);
-  --shadow-raised: 0 18px 50px rgba(0, 0, 0, 0.6);
-  --shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  --shadow-card: 0 10px 30px var(--shade-45), 0 2px 6px var(--shade-35);
+  --shadow-raised: 0 18px 50px var(--shade-60);
+  --shadow-inset: inset 0 1px 0 var(--highlight-inset);
+  --shadow-well: inset 0 2px 6px var(--shade-50);
+  --shadow-track: inset 0 1px 3px var(--shade-60);
+  --shadow-topbar: 0 1px 0 var(--red-ember), 0 10px 30px var(--shade-35);
+  --shadow-btn-primary: 0 0 0 1px var(--shade-30), 0 6px 18px var(--red-ember), var(--shadow-inset);
+  --shadow-btn-primary-hover: 0 0 0 1px var(--shade-30), 0 8px 26px var(--red-glow);
+  --shadow-modal: var(--shadow-raised), 0 0 0 1px var(--shade-60), 0 0 60px var(--red-glow-soft);
+  --shadow-focus: 0 0 0 3px var(--red-glow-soft);
   --shadow-turn:
     0 0 0 1px var(--red-300), 0 0 24px var(--red-glow),
     0 0 60px var(--red-glow-soft);
+  --shadow-turn-peak:
+    0 0 0 1px var(--red-200), 0 0 34px var(--red-glow),
+    0 0 80px var(--red-glow-soft);
   --shadow-turn-pc:
     0 0 0 1px var(--blue-300), 0 0 24px var(--blue-glow-strong),
     0 0 60px var(--blue-glow-soft);
+  --shadow-turn-pc-peak:
+    0 0 0 1px var(--blue-300), 0 0 34px var(--blue-glow-strong),
+    0 0 80px var(--blue-glow-soft);
+  --shadow-turn-lair: 0 0 0 1px var(--gold-400), 0 0 24px var(--gold-glow);
+  --shadow-open-encounter: 0 0 0 1px var(--red-500);
+
+  /* Glows: small halos around pips, bars and badges */
+  --glow-red: 0 0 10px var(--red-glow);
+  --glow-red-sm: 0 0 8px var(--red-glow);
+  --glow-red-soft: 0 0 12px var(--red-glow-soft);
+  --glow-red-soft-lg: 0 0 16px var(--red-glow-soft);
+  --glow-gold-sm: 0 0 8px var(--gold-glow);
+  --glow-gold-lg: 0 0 16px var(--gold-glow);
+  --glow-green: 0 0 10px var(--green-glow);
+  --glow-green-sm: 0 0 8px var(--green-glow);
+  --glow-amber: 0 0 10px var(--amber-glow);
+  --glow-cyan: 0 0 10px var(--cyan-glow);
+  --glow-blue-sm: 0 0 8px var(--blue-glow);
+  --glow-blue-soft: 0 0 12px var(--blue-glow-soft);
+  --glow-white-sm: 0 0 8px var(--white-glow);
+  --glow-text-gold: 0 0 18px var(--gold-glow);
+  --drop-red: drop-shadow(0 0 8px var(--red-glow));
+  --drop-red-soft: drop-shadow(0 0 6px var(--red-glow-soft));
+  --drop-blue-soft: drop-shadow(0 0 6px var(--blue-glow-soft));
+  --drop-round: drop-shadow(0 0 14px var(--red-glow-soft));
+  --drop-round-bump: drop-shadow(0 0 30px var(--red-glow));
+  --blur-topbar: blur(12px);
+  --blur-backdrop: blur(6px);
 
   /* ---------- Motion ---------- */
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
@@ -114,6 +198,12 @@
   --dur-fast: 120ms;
   --dur-med: 220ms;
   --dur-slow: 420ms;
+  --dur-pulse: 2.4s; /* current-turn glow cycle */
+  --dur-toast: 2.4s; /* how long a plain toast stays before fading */
+  --dur-toast-action: 6.4s; /* toasts with an Undo button stay longer */
+  --lift-sm: -1px;
+  --lift-md: -2px;
+  --lift-lg: -3px;
 
   /* ---------- Layout ---------- */
   --app-max: 1480px;
@@ -122,8 +212,28 @@
   --touch-target: 40px; /* minimum height for primary card controls */
   --drawer-w: 380px;
   --dice-w: 300px;
+  --modal-w: 680px;
+  --modal-w-sm: 460px;
+  --modal-w-md: 800px;
+  --modal-w-lg: 900px;
+  --encounter-card-min: 320px;
+  --detail-extra-min: 280px;
   --pip-size: 14px;
   --pip-size-sm: 12px;
   --icon-btn: 30px;
   --icon-btn-sm: 24px;
+  --init-box: 54px;
+  --shield-w: 58px;
+  --shield-tip: 10px; /* room for the shield's pointed base */
+  --shield-stroke: rgba(255, 255, 255, 0.24);
+  /* Shape only (the mask uses alpha), so the fill colour in the SVG is irrelevant. */
+  --shield-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 58 72' preserveAspectRatio='none'%3E%3Cpath d='M4 0h50a4 4 0 0 1 4 4v40c0 13-14 23-29 28C14 67 0 57 0 44V4a4 4 0 0 1 4-4z'/%3E%3C/svg%3E");
+  --sigil: 36px;
+  --sigil-icon: 26px;
+  --hp-bar-h: 8px;
+  --spell-level-w: 46px;
+  --count-w: 34px;
+  --swatch: 10px;
+  --check-size: 16px;
+  --scrollbar: 10px;
 }

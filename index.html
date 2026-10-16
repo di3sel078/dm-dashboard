@@ -32,6 +32,15 @@
         <button class="tab" data-view="active" type="button">Active Encounter</button>
         <button class="tab" data-view="library" type="button">Library</button>
       </nav>
+
+      <div class="topbar-tools">
+        <button class="icon-btn" id="btn-shortcuts" type="button" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="2" y="6" width="20" height="12" rx="2" />
+            <path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10" />
+          </svg>
+        </button>
+      </div>
     </header>
 
     <main class="app">
@@ -108,6 +117,10 @@
               <button class="btn btn-ghost" id="btn-short-rest" type="button">Short Rest</button>
               <button class="btn btn-ghost" id="btn-long-rest" type="button">Long Rest</button>
             </div>
+            <div class="segmented" role="group" aria-label="Card layout">
+              <button type="button" data-card-mode="full" aria-pressed="true">Full</button>
+              <button type="button" data-card-mode="compact" aria-pressed="false">Compact</button>
+            </div>
             <span class="tracker-actions-spacer"></span>
             <span class="difficulty hidden" id="difficulty"></span>
             <span class="xp-total hidden" id="xp-total" title="Sum of enemy XP by CR (DMG p.275). No group multiplier applied."></span>
@@ -118,7 +131,7 @@
             </div>
           </div>
 
-          <div class="card-grid" id="combatant-cards"></div>
+          <div class="card-grid" id="combatant-cards" aria-label="Combatants in initiative order"></div>
         </div>
       </section>
 
@@ -513,6 +526,41 @@
       </form>
     </dialog>
 
+    <!-- ============ KEYBOARD SHORTCUTS ============ -->
+    <dialog class="modal modal-sm" id="shortcuts-modal" aria-labelledby="shortcuts-title">
+      <div class="modal-form">
+        <div class="modal-head">
+          <h2 class="modal-title" id="shortcuts-title">Keyboard Shortcuts</h2>
+          <button class="icon-btn modal-close" type="button" data-close aria-label="Close">×</button>
+        </div>
+        <div class="modal-body">
+          <table class="shortcut-table">
+            <tbody>
+              <tr><th scope="row"><kbd>N</kbd></th><td>Next turn</td></tr>
+              <tr><th scope="row"><kbd>P</kbd></th><td>Previous turn</td></tr>
+              <tr><th scope="row"><kbd>→</kbd> <kbd>←</kbd></th><td>Next / previous turn, if enabled below</td></tr>
+              <tr><th scope="row"><kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>Z</kbd></th><td>Undo the last combat change</td></tr>
+              <tr><th scope="row"><kbd>D</kbd></th><td>Open or close the dice roller</td></tr>
+              <tr><th scope="row"><kbd>L</kbd></th><td>Open or close the combat log</td></tr>
+              <tr><th scope="row"><kbd>?</kbd></th><td>This list</td></tr>
+              <tr><th scope="row"><kbd>Enter</kbd></th><td>In a card's amount box: apply damage</td></tr>
+              <tr><th scope="row"><kbd>Shift</kbd> + <kbd>Enter</kbd></th><td>In a card's amount box: heal</td></tr>
+              <tr><th scope="row"><kbd>Esc</kbd></th><td>Close a dialog</td></tr>
+            </tbody>
+          </table>
+          <label class="checkbox-field">
+            <input type="checkbox" id="opt-arrow-keys" />
+            <span>Use the arrow keys for turns (off by default so they keep scrolling the page)</span>
+          </label>
+          <p class="detail-hint">Shortcuts are ignored while you are typing in a field.</p>
+        </div>
+        <div class="modal-foot">
+          <button class="btn btn-primary" type="button" data-close>Done</button>
+        </div>
+      </div>
+    </dialog>
+
+    <div class="sr-only" id="sr-live" aria-live="polite" aria-atomic="true"></div>
     <div class="toast-stack" id="toast-stack" aria-live="polite"></div>
 
     <script src="rules.js" defer></script>
