@@ -1,0 +1,119 @@
+/* ==========================================================================
+   DM Dashboard — Design Tokens
+   Every color, spacing unit, radius, font size and shadow lives here.
+   styles.css consumes these; it never hard-codes a value.
+   ========================================================================== */
+
+:root {
+  /* ---------- Surfaces ---------- */
+  --bg-0: #0f0f10; /* page floor, behind the vignette */
+  --bg-1: #1a1a1a; /* app background */
+  --bg-2: #222222; /* cards, panels */
+  --bg-3: #2a2a2a; /* raised elements, inputs */
+  --bg-4: #333333; /* hover on raised elements */
+
+  /* ---------- Accent: blood red ---------- */
+  --red-900: #4a0000;
+  --red-800: #6b0000;
+  --red-700: #8b0000;
+  --red-600: #a51414;
+  --red-500: #b71c1c;
+  --red-400: #c62828;
+  --red-300: #e53935;
+  --red-200: #ef5350;
+  --red-glow: rgba(229, 57, 53, 0.55);
+  --red-glow-soft: rgba(229, 57, 53, 0.22);
+
+  /* ---------- Secondary accents ---------- */
+  --gold-500: #c9a227; /* ornaments, headings */
+  --gold-400: #e0b93a;
+  --gold-glow: rgba(224, 185, 58, 0.35);
+  --green-500: #43a047; /* healing, healthy HP */
+  --amber-500: #ffb300; /* wounded HP */
+  --green-300: #a5d6a7; /* positive modifiers, success pips */
+  --amber-300: #ffd54f; /* conditions */
+  --amber-glow-soft: rgba(255, 179, 0, 0.14);
+  --blue-300: #90caf9; /* PC turn highlight */
+  --blue-400: #64b5f6; /* spell slots */
+  --blue-500: #1e88e5;
+  --blue-glow: rgba(100, 181, 246, 0.35);
+  --blue-glow-strong: rgba(100, 181, 246, 0.55);
+  --blue-glow-soft: rgba(100, 181, 246, 0.2);
+  --blue-tint: #1d2733; /* current-turn PC card background */
+  --cyan-400: #4dd0e1; /* temporary HP */
+  --cyan-glow: rgba(77, 208, 225, 0.45);
+  --purple-300: #ce93d8; /* concentration */
+  --purple-glow-soft: rgba(206, 147, 216, 0.16);
+
+  /* ---------- Text ---------- */
+  --text-0: #f5f1ea; /* primary, warm off-white */
+  --text-1: #d6d0c6; /* secondary */
+  --text-2: #a39d93; /* muted */
+  --text-3: #6f6a62; /* disabled / hints */
+
+  /* ---------- Borders ---------- */
+  --border-subtle: rgba(255, 255, 255, 0.07);
+  --border-mid: rgba(255, 255, 255, 0.14);
+  --border-light: rgba(245, 241, 234, 0.55);
+  --border-red: var(--red-500);
+
+  /* ---------- Typography ---------- */
+  --font-display: "Cinzel", "Georgia", serif;
+  --font-body: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "SF Mono", "Menlo", "Consolas", monospace;
+
+  --fs-xs: 0.72rem;
+  --fs-sm: 0.82rem;
+  --fs-md: 0.95rem;
+  --fs-lg: 1.1rem;
+  --fs-xl: 1.4rem;
+  --fs-2xl: 1.9rem;
+  --fs-3xl: 2.6rem;
+  --fs-hero: 4.2rem;
+
+  --lh-tight: 1.15;
+  --lh-normal: 1.5;
+
+  --tracking-caps: 0.14em;
+  --tracking-display: 0.06em;
+
+  /* ---------- Spacing ---------- */
+  --sp-1: 0.25rem;
+  --sp-2: 0.5rem;
+  --sp-3: 0.75rem;
+  --sp-4: 1rem;
+  --sp-5: 1.5rem;
+  --sp-6: 2rem;
+  --sp-7: 3rem;
+  --sp-8: 4rem;
+
+  /* ---------- Radius ---------- */
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-lg: 16px;
+  --r-xl: 22px;
+  --r-pill: 999px;
+
+  /* ---------- Shadows ---------- */
+  --shadow-card: 0 10px 30px rgba(0, 0, 0, 0.45), 0 2px 6px rgba(0, 0, 0, 0.35);
+  --shadow-raised: 0 18px 50px rgba(0, 0, 0, 0.6);
+  --shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  --shadow-turn:
+    0 0 0 1px var(--red-300), 0 0 24px var(--red-glow),
+    0 0 60px var(--red-glow-soft);
+  --shadow-turn-pc:
+    0 0 0 1px var(--blue-300), 0 0 24px var(--blue-glow-strong),
+    0 0 60px var(--blue-glow-soft);
+
+  /* ---------- Motion ---------- */
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --dur-fast: 120ms;
+  --dur-med: 220ms;
+  --dur-slow: 420ms;
+
+  /* ---------- Layout ---------- */
+  --app-max: 1480px;
+  --topbar-h: 72px;
+  --card-min: 300px;
+}

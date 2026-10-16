@@ -1,0 +1,595 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DM Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;600;700;900&family=Inter:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="variables.css" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="bg-vignette" aria-hidden="true"></div>
+
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-sigil" aria-hidden="true">
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.6"
+            stroke-linejoin="round"
+          >
+            <path d="M12 2 21 7v10l-9 5-9-5V7z" />
+            <path d="M12 2v20M3 7l9 5 9-5" />
+          </svg>
+        </span>
+        <h1 class="brand-title">DM Dashboard</h1>
+      </div>
+
+      <nav class="tabs" aria-label="Views">
+        <button class="tab" data-view="encounters" type="button">
+          Encounters
+        </button>
+        <button class="tab" data-view="active" type="button">
+          Active Encounter
+        </button>
+        <button class="tab" data-view="library" type="button">Library</button>
+      </nav>
+    </header>
+
+    <main class="app">
+      <!-- ============ ENCOUNTER LIST ============ -->
+      <section class="view" id="view-encounters" data-view="encounters">
+        <div class="view-head">
+          <div>
+            <h2 class="view-title">Encounters</h2>
+            <p class="view-subtitle">Saved battles, ready to resume.</p>
+          </div>
+          <button class="btn btn-primary" id="btn-new-encounter" type="button">
+            + New Encounter
+          </button>
+        </div>
+        <div class="encounter-grid" id="encounter-list"></div>
+      </section>
+
+      <!-- ============ ACTIVE ENCOUNTER ============ -->
+      <section class="view" id="view-active" data-view="active">
+        <div id="active-empty" class="empty-state hidden">
+          <div class="empty-ornament" aria-hidden="true">✦</div>
+          <h2 class="empty-title">No encounter open</h2>
+          <p>Open one from the Encounters tab, or forge a new battle.</p>
+          <button
+            class="btn btn-primary"
+            id="btn-new-encounter-from-active"
+            type="button"
+          >
+            + New Encounter
+          </button>
+        </div>
+
+        <div id="active-content" class="hidden">
+          <div class="tracker-bar">
+            <div class="tracker-name">
+              <span class="tracker-label">Encounter</span>
+              <h2 class="tracker-title" id="active-name"></h2>
+              <div class="clock" id="clock">
+                <span class="clock-label">Clock</span>
+                <span class="clock-time" id="clock-time">00:00</span>
+                <button
+                  class="icon-btn clock-btn"
+                  id="btn-clock-toggle"
+                  type="button"
+                  title="Start clock"
+                  aria-label="Start clock"
+                ></button>
+                <button
+                  class="icon-btn clock-btn"
+                  id="btn-clock-reset"
+                  type="button"
+                  title="Reset clock"
+                  aria-label="Reset clock"
+                >
+                  <svg
+                    viewBox="0 0 24 24"
+                    width="14"
+                    height="14"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M3 12a9 9 0 1 0 3-6.7L3 8" />
+                    <path d="M3 3v5h5" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+
+            <div class="round-counter">
+              <span class="round-label">Round</span>
+              <span class="round-number" id="round-number">1</span>
+            </div>
+
+            <div class="tracker-controls">
+              <button
+                class="btn btn-ghost"
+                id="btn-prev-turn"
+                type="button"
+                title="Previous turn"
+              >
+                <span class="chev" aria-hidden="true">‹</span> Prev
+              </button>
+              <button
+                class="btn btn-primary btn-lg"
+                id="btn-next-turn"
+                type="button"
+                title="Next turn"
+              >
+                Next Turn <span class="chev" aria-hidden="true">›</span>
+              </button>
+            </div>
+          </div>
+
+          <div class="turn-banner" id="turn-banner"></div>
+
+          <div class="tracker-actions">
+            <button class="btn btn-outline-light" id="btn-add-pc" type="button">
+              + Add PC
+            </button>
+            <button
+              class="btn btn-outline-red"
+              id="btn-add-enemy"
+              type="button"
+            >
+              + Add Enemy
+            </button>
+            <button
+              class="btn btn-outline-gold"
+              id="btn-add-lair"
+              type="button"
+            >
+              + Lair Action
+            </button>
+            <span class="tracker-actions-spacer"></span>
+            <span class="difficulty hidden" id="difficulty"></span>
+            <span class="tracker-count" id="tracker-count"></span>
+          </div>
+
+          <div class="card-grid" id="combatant-cards"></div>
+        </div>
+      </section>
+
+      <!-- ============ LIBRARY ============ -->
+      <section class="view" id="view-library" data-view="library">
+        <div class="view-head">
+          <div>
+            <h2 class="view-title">Library</h2>
+            <p class="view-subtitle">
+              Reusable stat blocks. Editing here never touches an open
+              encounter.
+            </p>
+          </div>
+        </div>
+
+        <div class="library-columns">
+          <div class="library-col">
+            <div class="library-col-head">
+              <h3 class="library-col-title library-col-title--pc">
+                Player Characters
+              </h3>
+              <button
+                class="btn btn-outline-light btn-sm"
+                id="btn-new-pc"
+                type="button"
+              >
+                + New PC
+              </button>
+            </div>
+            <div class="library-list" id="library-pcs"></div>
+          </div>
+          <div class="library-col">
+            <div class="library-col-head">
+              <h3 class="library-col-title library-col-title--enemy">
+                Enemies
+              </h3>
+              <button
+                class="btn btn-outline-red btn-sm"
+                id="btn-new-enemy"
+                type="button"
+              >
+                + New Enemy
+              </button>
+            </div>
+            <div class="library-list" id="library-enemies"></div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- ============ CREATURE MODAL ============ -->
+    <dialog class="modal" id="creature-modal">
+      <form class="modal-form" id="creature-form" method="dialog" novalidate>
+        <div class="modal-head">
+          <h2 class="modal-title" id="creature-modal-title">New Creature</h2>
+          <button
+            class="icon-btn modal-close"
+            type="button"
+            data-close
+            aria-label="Close"
+          >
+            ×
+          </button>
+        </div>
+
+        <div class="modal-body">
+          <div class="field-row">
+            <label class="field field--grow">
+              <span class="field-label">Name</span>
+              <input
+                type="text"
+                name="name"
+                required
+                autocomplete="off"
+                placeholder="e.g. Goblin Boss"
+              />
+            </label>
+            <label class="field" data-for="enemy">
+              <span class="field-label">CR</span>
+              <select name="cr"></select>
+            </label>
+            <label class="field" data-for="pc">
+              <span class="field-label">Level</span>
+              <input type="number" name="level" min="1" max="20" value="1" />
+            </label>
+          </div>
+
+          <div class="field-row" data-for="pc">
+            <label class="field">
+              <span class="field-label">Class</span>
+              <select name="cls"></select>
+            </label>
+            <label class="field">
+              <span class="field-label">Race</span>
+              <input
+                type="text"
+                name="race"
+                autocomplete="off"
+                placeholder="e.g. Half-Elf"
+              />
+            </label>
+          </div>
+
+          <div class="field-row">
+            <label class="field">
+              <span class="field-label">HP</span>
+              <input type="number" name="hpMax" min="0" value="10" />
+            </label>
+            <label class="field">
+              <span class="field-label">AC</span>
+              <input type="number" name="ac" min="0" value="10" />
+            </label>
+            <label class="field" data-for="pc">
+              <span class="field-label">Init Bonus</span>
+              <input
+                type="number"
+                name="initBonus"
+                title="Leave blank to use the DEX modifier"
+              />
+            </label>
+            <label class="field">
+              <span class="field-label">Speed</span>
+              <input
+                type="text"
+                name="speed"
+                autocomplete="off"
+                placeholder="30 ft."
+              />
+            </label>
+            <label class="field" id="creature-initiative-field">
+              <span class="field-label">Initiative</span>
+              <input type="number" name="initiative" value="0" />
+            </label>
+          </div>
+
+          <fieldset class="stats-fieldset">
+            <legend class="field-label">Ability Scores</legend>
+            <div class="stats-inputs">
+              <label class="stat-input"
+                ><span>STR</span
+                ><input
+                  type="number"
+                  name="str"
+                  min="1"
+                  max="30"
+                  value="10"
+                /><span class="stat-input-mod" data-mod-for="str"
+                  >+0</span
+                ></label
+              >
+              <label class="stat-input"
+                ><span>DEX</span
+                ><input
+                  type="number"
+                  name="dex"
+                  min="1"
+                  max="30"
+                  value="10"
+                /><span class="stat-input-mod" data-mod-for="dex"
+                  >+0</span
+                ></label
+              >
+              <label class="stat-input"
+                ><span>CON</span
+                ><input
+                  type="number"
+                  name="con"
+                  min="1"
+                  max="30"
+                  value="10"
+                /><span class="stat-input-mod" data-mod-for="con"
+                  >+0</span
+                ></label
+              >
+              <label class="stat-input"
+                ><span>INT</span
+                ><input
+                  type="number"
+                  name="int"
+                  min="1"
+                  max="30"
+                  value="10"
+                /><span class="stat-input-mod" data-mod-for="int"
+                  >+0</span
+                ></label
+              >
+              <label class="stat-input"
+                ><span>WIS</span
+                ><input
+                  type="number"
+                  name="wis"
+                  min="1"
+                  max="30"
+                  value="10"
+                /><span class="stat-input-mod" data-mod-for="wis"
+                  >+0</span
+                ></label
+              >
+              <label class="stat-input"
+                ><span>CHA</span
+                ><input
+                  type="number"
+                  name="cha"
+                  min="1"
+                  max="30"
+                  value="10"
+                /><span class="stat-input-mod" data-mod-for="cha"
+                  >+0</span
+                ></label
+              >
+            </div>
+          </fieldset>
+
+          <details class="spell-details" id="skills-details" data-for="enemy">
+            <summary class="spell-summary">
+              <span class="field-label">Skill Proficiencies</span>
+              <span class="spell-summary-hint" id="skills-prof-hint"></span>
+            </summary>
+            <div class="skill-grid" id="skill-grid"></div>
+          </details>
+
+          <details class="spell-details" id="attacks-details" data-for="enemy">
+            <summary class="spell-summary">
+              <span class="field-label">Attacks</span>
+              <span class="spell-summary-hint"
+                >to hit and damage bonus fill in from the ability and CR</span
+              >
+            </summary>
+            <div class="spell-rows" id="attack-rows"></div>
+            <button
+              class="btn btn-ghost btn-sm"
+              type="button"
+              id="btn-add-attack"
+            >
+              + Add Attack
+            </button>
+            <datalist id="damage-types"></datalist>
+          </details>
+
+          <details class="spell-details" id="recharge-details" data-for="enemy">
+            <summary class="spell-summary">
+              <span class="field-label">Recharge Abilities</span>
+              <span class="spell-summary-hint"
+                >rolled automatically each turn</span
+              >
+            </summary>
+            <div class="spell-rows" id="recharge-rows"></div>
+            <button
+              class="btn btn-ghost btn-sm"
+              type="button"
+              id="btn-add-recharge"
+            >
+              + Add Ability
+            </button>
+          </details>
+
+          <details class="spell-details" id="spell-details">
+            <summary class="spell-summary">
+              <span class="field-label">Spell Slots</span>
+              <span class="spell-summary-hint">optional</span>
+            </summary>
+            <div class="spell-rows" id="spell-rows"></div>
+            <button
+              class="btn btn-ghost btn-sm"
+              type="button"
+              id="btn-add-spell-level"
+            >
+              + Add Spell Level
+            </button>
+          </details>
+
+          <label class="checkbox-field" id="save-to-library-field">
+            <input type="checkbox" name="saveToLibrary" />
+            <span>Also save to the Library</span>
+          </label>
+        </div>
+
+        <div class="modal-foot">
+          <button class="btn btn-ghost" type="button" data-close>Cancel</button>
+          <button class="btn btn-primary" type="submit" id="creature-submit">
+            Save
+          </button>
+        </div>
+      </form>
+    </dialog>
+
+    <!-- ============ COMBATANT DETAIL ============ -->
+    <dialog class="modal modal-lg" id="detail-modal">
+      <div class="modal-form">
+        <div class="modal-head">
+          <div>
+            <h2 class="modal-title" id="detail-title">Combatant</h2>
+            <span class="detail-subtitle" id="detail-subtitle"></span>
+          </div>
+          <button
+            class="icon-btn modal-close"
+            type="button"
+            data-close
+            aria-label="Close"
+          >
+            ×
+          </button>
+        </div>
+        <div class="modal-body detail-body" id="detail-body"></div>
+        <div class="modal-foot modal-foot--split">
+          <button class="btn btn-ghost" type="button" id="detail-edit">
+            Edit Stat Block
+          </button>
+          <button class="btn btn-primary" type="button" data-close>Done</button>
+        </div>
+      </div>
+    </dialog>
+
+    <!-- ============ ADD-TO-ENCOUNTER PICKER ============ -->
+    <dialog class="modal modal-sm" id="picker-modal">
+      <form class="modal-form" id="picker-form" method="dialog" novalidate>
+        <div class="modal-head">
+          <h2 class="modal-title" id="picker-title">Add Combatant</h2>
+          <button
+            class="icon-btn modal-close"
+            type="button"
+            data-close
+            aria-label="Close"
+          >
+            ×
+          </button>
+        </div>
+        <div class="modal-body">
+          <label class="field field-wide">
+            <span class="field-label">From the library</span>
+            <select name="templateId" id="picker-select"></select>
+          </label>
+          <div class="field-row">
+            <label class="field">
+              <span class="field-label" id="picker-init-label">Initiative</span>
+              <input type="number" name="initiative" value="0" />
+            </label>
+            <label class="field">
+              <span class="field-label">How many</span>
+              <input type="number" name="count" min="1" max="20" value="1" />
+            </label>
+          </div>
+          <p class="picker-empty hidden" id="picker-empty">
+            The library has nothing of this kind yet.
+          </p>
+        </div>
+        <div class="modal-foot modal-foot--split">
+          <button class="btn btn-ghost" type="button" id="picker-create-new">
+            Create New…
+          </button>
+          <div>
+            <button class="btn btn-ghost" type="button" data-close>
+              Cancel
+            </button>
+            <button class="btn btn-primary" type="submit" id="picker-submit">
+              Add to Encounter
+            </button>
+          </div>
+        </div>
+      </form>
+    </dialog>
+
+    <!-- ============ TEXT PROMPT DIALOG ============ -->
+    <dialog class="modal modal-sm" id="prompt-modal">
+      <form class="modal-form" id="prompt-form" method="dialog" novalidate>
+        <div class="modal-head">
+          <h2 class="modal-title" id="prompt-title">Name</h2>
+          <button
+            class="icon-btn modal-close"
+            type="button"
+            data-close
+            aria-label="Close"
+          >
+            ×
+          </button>
+        </div>
+        <div class="modal-body">
+          <label class="field field-wide">
+            <span class="field-label" id="prompt-label">Name</span>
+            <input
+              type="text"
+              name="value"
+              id="prompt-input"
+              autocomplete="off"
+              required
+            />
+          </label>
+        </div>
+        <div class="modal-foot">
+          <button class="btn btn-ghost" type="button" data-close>Cancel</button>
+          <button class="btn btn-primary" type="submit" id="prompt-submit">
+            OK
+          </button>
+        </div>
+      </form>
+    </dialog>
+
+    <!-- ============ CONFIRM DIALOG ============ -->
+    <dialog class="modal modal-sm modal-danger" id="confirm-modal">
+      <form class="modal-form" id="confirm-form" method="dialog" novalidate>
+        <div class="modal-head">
+          <h2 class="modal-title" id="confirm-title">Are you sure?</h2>
+          <button
+            class="icon-btn modal-close"
+            type="button"
+            data-close
+            aria-label="Close"
+          >
+            ×
+          </button>
+        </div>
+        <div class="modal-body">
+          <p class="confirm-text" id="confirm-text"></p>
+        </div>
+        <div class="modal-foot">
+          <button class="btn btn-ghost" type="button" data-close>Cancel</button>
+          <button class="btn btn-danger" type="submit" id="confirm-submit">
+            Delete
+          </button>
+        </div>
+      </form>
+    </dialog>
+
+    <div class="toast-stack" id="toast-stack" aria-live="polite"></div>
+
+    <script src="main.js" defer></script>
+  </body>
+</html>
