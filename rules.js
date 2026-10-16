@@ -99,6 +99,10 @@
   };
   const clamp = (n, lo, hi) => Math.min(hi, Math.max(lo, n));
   const clone = (obj) => JSON.parse(JSON.stringify(obj));
+  /** Ids end up in HTML attributes, so anything unusual (e.g. from an import) is replaced. */
+  const ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+  const safeId = (v) => (typeof v === "string" && ID_PATTERN.test(v) ? v : uuid());
+  const safeRef = (v) => (typeof v === "string" && ID_PATTERN.test(v) ? v : null);
   const isBlank = (v) => v === null || v === undefined || String(v).trim() === "";
 
   const modifier = (score) => Math.floor((toInt(score, 10) - 10) / 2);
@@ -293,7 +297,7 @@
   function normalizeInstance(c = {}) {
     if (c.type === "lair") {
       return {
-        instanceId: c.instanceId || uuid(),
+        instanceId: safeId(c.instanceId),
         templateId: null,
         type: "lair",
         name: String(c.name ?? "").trim() || "Lair Action",
@@ -311,8 +315,8 @@
     const lr = base.legendaryResistance || 0;
     return {
       ...base,
-      instanceId: c.instanceId || uuid(),
-      templateId: c.templateId ?? null,
+      instanceId: safeId(c.instanceId),
+      templateId: safeRef(c.templateId),
       type,
       initiative: toInt(c.initiative, 0),
       initRank: Number.isFinite(c.initRank) ? c.initRank : 0,
@@ -350,7 +354,7 @@
   function normalizeEncounter(enc = {}) {
     return {
       ...enc,
-      id: enc.id || uuid(),
+      id: safeId(enc.id),
       name: String(enc.name ?? "").trim() || "Encounter",
       round: Math.max(1, toInt(enc.round, 1)),
       currentTurnIndex: Math.max(0, toInt(enc.currentTurnIndex, 0)),
@@ -373,7 +377,7 @@
     return {
       ...ui,
       view: VIEWS.includes(ui.view) ? ui.view : "encounters",
-      activeEncounterId: typeof ui.activeEncounterId === "string" ? ui.activeEncounterId : null,
+      activeEncounterId: safeRef(ui.activeEncounterId),
       cardMode: ui.cardMode === "compact" ? "compact" : "full",
       arrowKeys: !!ui.arrowKeys,
       logOpen: !!ui.logOpen,
@@ -400,7 +404,7 @@
     const lib = (list, type) =>
       (Array.isArray(list) ? list : [])
         .filter((t) => t && typeof t === "object")
-        .map((t) => ({ ...normalizeTemplate(t, type), id: t.id || uuid() }));
+        .map((t) => ({ ...normalizeTemplate(t, type), id: safeId(t.id) }));
     const out = {
       creatureLibrary: {
         pcs: lib(parsed?.creatureLibrary?.pcs, "pc"),

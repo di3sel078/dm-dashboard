@@ -734,6 +734,64 @@
     eq(R.playerProjection({ encounters: [], ui: {} }), null);
   });
 
+  /* ---------- Phase 5 additions ---------- */
+
+  test("recharge parsing: min values are read, clamped and defaulted", () => {
+    const m = R.normalizeTemplate({ recharges: [
+      { name: "Breath", min: "5" }, { name: "Gaze", min: 6 }, { name: "Odd", min: 9 }, { name: "Low", min: 1 },
+      { name: "Blank" }, { name: "  " },
+    ] }, "enemy");
+    eq(m.recharges.map((r) => [r.name, r.min]), [["Breath", 5], ["Gaze", 6], ["Odd", 6], ["Low", 2], ["Blank", 5], ["Ability", 5]]);
+    eq(m.recharges.map((r) => R.rechargeLabel(r.min)), ["5–6", "6", "6", "2–6", "5–6", "5–6"]);
+    const inst = R.normalizeInstance({ type: "enemy", recharges: [{ name: "Breath", min: 5, available: false, lastRoll: 3 }] });
+    eq([inst.recharges[0].available, inst.recharges[0].lastRoll], [false, 3]);
+  });
+
+  test("migration is idempotent", () => {
+    const once = R.migrateState(R.clone(V1_SAVE));
+    const twice = R.migrateState(R.clone(once));
+    eq(JSON.stringify(twice), JSON.stringify(once));
+  });
+
+  test("a v1 save keeps every combatant field the v1 app stored", () => {
+    const enc = R.migrateState(R.clone(V1_SAVE)).encounters[0];
+    const aria = enc.combatants.find((c) => c.name === "Aria");
+    eq([aria.hp.current, aria.hp.max, aria.exhaustion, aria.deathSaves.success, aria.deathSaves.fail, aria.concentration.spell],
+      [0, 38, 1, 1, 1, "Hunter's Mark"]);
+    eq([enc.clock.elapsedMs, enc.currentTurnIndex], [125000, 1]);
+    const gob = enc.combatants.find((c) => c.name === "Goblin 1");
+    eq([gob.hp.current, gob.hp.temp, gob.attacks[0].toHit, gob.skills[0]], [3, 2, 4, "stealth"]);
+  });
+
+  test("XP total ignores PCs and lair actions; CR blank counts 0", () => {
+    const enc = R.normalizeEncounter({ combatants: [pc(), { type: "lair" }, enemy({ cr: "" }), enemy({ cr: "5" })] });
+    eq(R.encounterXp(enc), 1800);
+  });
+
+  test("conditions expire on the round advance even mid-list", () => {
+    const enc = R.normalizeEncounter({ round: 1, combatants: [pc({ name: "A" }), pc({ name: "B" }), pc({ name: "C" })] });
+    R.nextTurn(enc); // B's turn, round 1
+    R.addCondition(enc.combatants[2], "Restrained", { rounds: 1, round: enc.round });
+    R.nextTurn(enc); // C's turn, still round 1
+    ok(R.hasCondition(enc.combatants[2], "Restrained"), "active for the rest of round 1");
+    R.nextTurn(enc); // round 2
+    ok(!R.hasCondition(enc.combatants[2], "Restrained"), "gone when round 2 begins");
+  });
+
+  test("ids that could break out of an HTML attribute are replaced on load and import", () => {
+    const evil = "x\" onmouseover=\"alert(1)";
+    const r = R.parseImport(JSON.stringify({
+      creatureLibrary: { pcs: [{ id: evil, name: "P" }], enemies: [] },
+      encounters: [{ id: evil, combatants: [{ type: "pc", instanceId: evil, templateId: evil }, { type: "lair", instanceId: evil }] }],
+    }));
+    ok(r.ok, r.error);
+    const ids = [r.data.creatureLibrary.pcs[0].id, r.data.encounters[0].id, ...r.data.encounters[0].combatants.map((c) => c.instanceId)];
+    ok(ids.every((id) => /^[A-Za-z0-9_-]+$/.test(id)), "sanitised: " + ids.join(" | "));
+    eq(r.data.encounters[0].combatants.find((c) => c.type === "pc").templateId, null);
+    const keep = R.normalizeInstance({ type: "pc", instanceId: "abc-123_X", templateId: "t-1" });
+    eq([keep.instanceId, keep.templateId], ["abc-123_X", "t-1"], "normal ids kept");
+  });
+
   /* ---------- Report ---------- */
 
   const failed = results.filter((r) => !r.ok);
